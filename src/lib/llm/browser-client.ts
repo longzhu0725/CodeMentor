@@ -10,6 +10,7 @@ import {
 import { SUB_AGENTS } from '@/lib/agents/definitions';
 import { skillRegistry } from '@/lib/skills/registry';
 import { KNOWLEDGE_TOPICS } from '@/lib/knowledge/topics';
+import { getRandomProblem } from '@/lib/knowledge/problems';
 
 interface ChatContext {
   currentProblem?: { title: string; description: string } | null;
@@ -133,22 +134,70 @@ export async function callBrowserLLM(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 180000);
 
-  const res = await fetch(`${baseURL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
+  // Retry with exponential backoff for 429 (ServerOverloaded) errors.
+  // Volcengine Ark frequently returns 429 for practice-type requests
+  // that require longer generation, even when simple chat works fine.
+  const MAX_RETRIES = 3;
+  let res: Response | null = null;
+  let lastError = '';
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      res = await fetch(`${baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${settings.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (res.ok) break;
+
+      const detail = await res.text().catch(() => '');
+      lastError = detail.slice(0, 300);
+
+      // Retry on 429 (rate limit / server overload) or 503 (service unavailable)
+      if ((res.status === 429 || res.status === 503) && attempt < MAX_RETRIES) {
+        clearTimeout(timeoutId);
+        const waitMs = Math.min(2000 * Math.pow(2, attempt), 10000);
+        await new Promise((r) => setTimeout(r, waitMs));
+        // Set a new timeout for the next attempt
+        controller.signal; // reuse same controller (not aborted)
+        continue;
+      }
+
+      // Non-retryable error
+      clearTimeout(timeoutId);
+      throw new Error(
+        `API 返回 ${res.status}${detail ? `：${detail.slice(0, 200)}` : ''}`
+      );
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (attempt < MAX_RETRIES && err instanceof Error && err.name === 'AbortError') {
+        // Timeout — retry with fresh controller
+        continue;
+      }
+      // For network errors, fall through to fallback logic below
+      lastError = err instanceof Error ? err.message : String(err);
+      res = null;
+      break;
+    }
+  }
 
   clearTimeout(timeoutId);
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
+  // If all retries failed, handle gracefully
+  if (!res || !res.ok) {
+    // For practice mode: fall back to local problem bank
+    if (mode === 'practice') {
+      return fallbackToLocalProblem();
+    }
+
+    // For other modes: throw with helpful message
     throw new Error(
-      `API 返回 ${res.status}${detail ? `：${detail.slice(0, 200)}` : ''}`
+      `API 返回错误${lastError ? `：${lastError.slice(0, 200)}` : '（请稍后重试）'}`
     );
   }
 
@@ -405,4 +454,21 @@ function formatExamples(examples: Array<{ input: string; output: string; explana
         `**示例 ${i + 1}**\n- 输入：${ex.input}\n- 输出：${ex.output}${ex.explanation ? `\n- 解释：${ex.explanation}` : ''}`
     )
     .join('\n\n');
+}
+
+/**
+ * When the LLM API is unavailable (429, 503, network error, etc.),
+ * fall back to a random problem from the local problem bank so the
+ * user can still practice without interruption.
+ */
+function fallbackToLocalProblem(): ChatResponse {
+  const problem = getRandomProblem();
+
+  return {
+    content: `API 当前繁忙，我从本地题库为你挑选了一道题目：\n\n### ${problem.title}\n\n${problem.description}\n\n**难度**：${'⭐'.repeat(problem.difficulty)}\n\n**知识点**：${problem.topicId}\n\n**示例**：\n${formatExamples(problem.examples)}\n\n**约束**：\n${(problem.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！输入 "/submit" 或点击运行后我会帮你评估。\n\n> 提示：API 恢复后可以再次使用 /practice 获取 AI 生成的题目。`,
+    agentTrail: [
+      { agent: 'problem_setter', action: 'API 不可用，降级到本地题库', timestamp: Date.now() },
+    ],
+    problem,
+  };
 }
