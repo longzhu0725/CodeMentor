@@ -53,20 +53,47 @@ const WELCOME_MESSAGE: AgentMessage = {
   timestamp: 0,
 };
 
+// Keywords that indicate the user wants to practice / get a problem.
+const PRACTICE_KEYWORDS = [
+  '出题', '出一道', '来一道', '练习题', '给我题', '刷题',
+  '做题', '算法题', '考考我', '挑战', '练一练',
+  'practice', 'give me a problem', 'exercise',
+];
+
+// Keywords that indicate the user wants a study plan.
+const PLAN_KEYWORDS = [
+  '学习计划', '学习路径', '学习路线', '规划', '怎么学',
+  '学习建议', '复习计划', '进阶路线',
+  'study plan', 'learning path', 'roadmap',
+];
+
+// Keywords that indicate the user wants a hint.
+const HINT_KEYWORDS = [
+  '提示', '给个提示', '卡住了', '不会做', '思路',
+  '怎么想', '点拨', '启发',
+];
+
+function matchesAny(text: string, keywords: string[]): boolean {
+  return keywords.some((kw) => text.includes(kw));
+}
+
 function inferMode(text: string, context?: SendMessageContext): 'chat' | 'practice' | 'plan' | 'review' {
   const trimmed = text.trim().toLowerCase();
+  // Explicit slash commands take priority.
   if (trimmed.startsWith('/practice')) return 'practice';
   if (trimmed.startsWith('/plan')) return 'plan';
+  if (trimmed.startsWith('/hint')) return 'review';
+  // Code submission with execution result → review.
   if (context?.code) return 'review';
+  // Natural language keyword detection.
+  if (matchesAny(trimmed, PRACTICE_KEYWORDS)) return 'practice';
+  if (matchesAny(trimmed, PLAN_KEYWORDS)) return 'plan';
+  if (matchesAny(trimmed, HINT_KEYWORDS)) return 'review';
   return 'chat';
 }
 
 function inferIntent(text: string): 'chat' | 'practice' | 'plan' | 'review' {
-  const trimmed = text.trim().toLowerCase();
-  if (trimmed.startsWith('/practice')) return 'practice';
-  if (trimmed.startsWith('/plan')) return 'plan';
-  if (trimmed.startsWith('/hint')) return 'review';
-  return 'chat';
+  return inferMode(text);
 }
 
 export function useChat(options: UseChatOptions): UseChatReturn {

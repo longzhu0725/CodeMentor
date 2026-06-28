@@ -76,7 +76,7 @@ function getPyodide() {
 // Harness: run arbitrary student code, capture stdout + errors.
 // If functionName and sampleInput are provided, also call the function.
 const RUN_HARNESS = \`import sys, io, json, traceback as _tb, ast as _ast
-_result = {"output": "", "error": "", "returnValue": null, "calledFunction": False}
+_result = {"output": "", "error": "", "returnValue": None, "calledFunction": False}
 _ns = {}
 _buf = io.StringIO()
 sys.stdout = _buf
