@@ -40,3 +40,10 @@ coverage
 # Temporary files
 *.log
 *.tmp
+
+# TypeScript build info
+*.tsbuildinfo
+
+# AI assistant config (internal)
+AGENTS.md
+CLAUDE.md
