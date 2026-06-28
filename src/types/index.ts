@@ -201,7 +201,7 @@ export interface ChatResponse {
 
 // --- UI Types ---
 
-export type ViewMode = 'chat' | 'practice' | 'dashboard';
+export type ViewMode = 'chat' | 'practice' | 'dashboard' | 'manage';
 
 export interface UITab {
   id: ViewMode;

@@ -37,6 +37,7 @@ export interface UseChatReturn {
   messages: AgentMessage[];
   sendMessage: (text: string, context?: SendMessageContext) => Promise<void>;
   appendMessage: (message: AgentMessage) => void;
+  loadMessages: (msgs: AgentMessage[]) => void;
   isLoading: boolean;
   agentTrail: AgentTrailItem[];
   currentProblem: AlgorithmProblem | null;
@@ -234,10 +235,17 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     setMessages((prev) => [...prev, message]);
   }, []);
 
+  const loadMessages = useCallback((msgs: AgentMessage[]) => {
+    setMessages(msgs.length > 0 ? msgs : [WELCOME_MESSAGE]);
+    setAgentTrail([]);
+    setIsLoading(false);
+  }, []);
+
   return {
     messages,
     sendMessage,
     appendMessage,
+    loadMessages,
     isLoading,
     agentTrail,
     currentProblem,

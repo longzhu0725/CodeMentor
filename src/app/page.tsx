@@ -8,6 +8,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { ChatPanel } from '@/components/ChatPanel';
 import { PracticeWorkbench } from '@/components/PracticeWorkbench';
 import { Dashboard } from '@/components/Dashboard';
+import { ResourceManager } from '@/components/ResourceManager';
 import { SettingsModal, AppSettings } from '@/components/SettingsModal';
 import { getRandomProblem } from '@/lib/knowledge/problems';
 import { sessionManager, ChatSession } from '@/lib/sessions/manager';
@@ -51,7 +52,20 @@ export default function Home() {
     setActiveSessionId(sessionManager.getActiveSessionId());
   }, []);
 
+  // Save current chat messages to the active session before switching
+  const saveCurrentSession = useCallback(() => {
+    const currentMessages = chat.messages;
+    if (currentMessages.length > 1) {
+      sessionManager.updateSession(activeSessionId, {
+        messages: currentMessages as AgentMessage[],
+        learnerState,
+      });
+    }
+  }, [chat.messages, activeSessionId, learnerState]);
+
   const handleNewSession = useCallback(() => {
+    // Save current session before creating a new one
+    saveCurrentSession();
     const newSession = sessionManager.createSession();
     refreshSessions();
     chat.clearChat();
@@ -59,27 +73,27 @@ export default function Home() {
     setCode('');
     setExecutionResult(null);
     setView('chat');
-  }, [chat, refreshSessions]);
+  }, [chat, refreshSessions, saveCurrentSession]);
 
   const handleSessionChange = useCallback((session: ChatSession) => {
+    // Save current session before switching
+    saveCurrentSession();
+    // Switch to the selected session
     sessionManager.setActiveSession(session.id);
     refreshSessions();
-    // Load session messages into chat
-    chat.clearChat();
-    if (session.messages.length > 0) {
-      // We need to reload messages - useChat doesn't expose a setter,
-      // so we'll rely on the session's learnerState
-      setProblem(null);
-      setCode('');
-      setExecutionResult(null);
-    }
+    // Load the selected session's messages
+    chat.loadMessages(session.messages as AgentMessage[]);
+    setProblem(null);
+    setCode('');
+    setExecutionResult(null);
     setView('chat');
-  }, [chat, refreshSessions]);
+  }, [chat, refreshSessions, saveCurrentSession]);
 
   const handleDeleteSession = useCallback((id: string) => {
     sessionManager.deleteSession(id);
     refreshSessions();
-    chat.clearChat();
+    const active = sessionManager.getActiveSession();
+    chat.loadMessages(active.messages as AgentMessage[]);
     setProblem(null);
     setCode('');
     setExecutionResult(null);
@@ -319,6 +333,8 @@ export default function Home() {
         )}
 
         {view === 'dashboard' && <Dashboard learnerState={learnerState} />}
+
+        {view === 'manage' && <ResourceManager />}
       </main>
 
       <SettingsModal
