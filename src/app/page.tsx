@@ -13,6 +13,7 @@ import { SettingsModal, AppSettings } from '@/components/SettingsModal';
 import { getRandomProblem } from '@/lib/knowledge/problems';
 import { sessionManager, ChatSession } from '@/lib/sessions/manager';
 import { toolRegistry, SLASH_COMMANDS } from '@/lib/tools/registry';
+import { getProblemHistory } from '@/lib/problem-history/manager';
 
 const SETTINGS_KEY = 'codementor:settings:v1';
 
@@ -53,16 +54,18 @@ export default function Home() {
     setActiveSessionId(sessionManager.getActiveSessionId());
   }, []);
 
-  // Save current chat messages to the active session before switching
+  // Save current chat messages + problem to the active session before switching
   const saveCurrentSession = useCallback(() => {
     const currentMessages = chat.messages;
     if (currentMessages.length > 1) {
       sessionManager.updateSession(activeSessionId, {
         messages: currentMessages as AgentMessage[],
         learnerState,
+        problem: problem ?? null,
+        code: code || '',
       });
     }
-  }, [chat.messages, activeSessionId, learnerState]);
+  }, [chat.messages, activeSessionId, learnerState, problem, code]);
 
   const handleNewSession = useCallback(() => {
     // Save current session before creating a new one
@@ -84,8 +87,9 @@ export default function Home() {
     refreshSessions();
     // Load the selected session's messages
     chat.loadMessages(session.messages as AgentMessage[]);
-    setProblem(null);
-    setCode('');
+    // Restore problem and code from the session
+    setProblem(session.problem ?? null);
+    setCode(session.code || (session.problem?.starterCode ?? ''));
     setExecutionResult(null);
     setView('chat');
   }, [chat, refreshSessions, saveCurrentSession]);
@@ -95,18 +99,19 @@ export default function Home() {
     refreshSessions();
     const active = sessionManager.getActiveSession();
     chat.loadMessages(active.messages as AgentMessage[]);
-    setProblem(null);
-    setCode('');
+    setProblem(active.problem ?? null);
+    setCode(active.code || (active.problem?.starterCode ?? ''));
     setExecutionResult(null);
   }, [chat, refreshSessions]);
 
-  // Sync problem from chat to practice view
+  // Sync problem from chat to practice view (only when a NEW problem arrives)
   useEffect(() => {
-    if (chat.currentProblem) {
+    if (chat.currentProblem && chat.currentProblem.id !== problem?.id) {
       setProblem(chat.currentProblem);
       setCode(chat.currentProblem.starterCode);
       setExecutionResult(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.currentProblem]);
 
   // Hydrate settings from localStorage after mount
@@ -138,15 +143,17 @@ export default function Home() {
     }));
   }, [settings.targetGroup, settings.hintLevel, updateState]);
 
-  // Save session on chat state changes
+  // Save session on chat state changes (including problem and code)
   useEffect(() => {
     if (chat.messages.length > 1) {
       sessionManager.updateSession(activeSessionId, {
         messages: chat.messages as AgentMessage[],
         learnerState,
+        problem: problem ?? null,
+        code: code || '',
       });
     }
-  }, [chat.messages, learnerState, activeSessionId]);
+  }, [chat.messages, learnerState, activeSessionId, problem, code]);
 
   const handleSend = useCallback(
     async (text: string) => {
@@ -245,6 +252,10 @@ export default function Home() {
       setExecutionResult(result);
 
       if (problem) {
+        // Save to problem history for later review
+        const history = getProblemHistory();
+        history.saveProblem(problem, code, result);
+
         const quality = result.testResults
           ? Math.round((result.testResults.passed / result.testResults.total) * 5)
           : result.success

@@ -1,13 +1,14 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { Skill } from '@/types';
+import { Skill, SavedProblem, ProblemStatus } from '@/types';
 import { toolRegistry, SLASH_COMMANDS } from '@/lib/tools/registry';
 import { skillManager } from '@/lib/skills/manager';
 import { KNOWLEDGE_TOPICS, getTopicById, getTopicsByCategory } from '@/lib/knowledge/topics';
 import { PROBLEM_BANK, getProblemsByTopic } from '@/lib/knowledge/problems';
+import { getProblemHistory } from '@/lib/problem-history/manager';
 
-type Tab = 'tools' | 'skills' | 'knowledge';
+type Tab = 'tools' | 'skills' | 'knowledge' | 'history';
 
 export function ResourceManager() {
   const [tab, setTab] = useState<Tab>('tools');
@@ -18,13 +19,14 @@ export function ResourceManager() {
       <header className="flex items-center justify-between border-b border-border px-6 py-4">
         <div>
           <h1 className="text-lg font-bold text-foreground">资源管理</h1>
-          <p className="text-xs text-muted">查看和管理工具、技能、知识库</p>
+          <p className="text-xs text-muted">查看和管理工具、技能、知识库、题目记录</p>
         </div>
         <div className="flex gap-1 rounded-xl border border-border bg-card p-1">
           {([
             { id: 'tools', label: '工具', icon: toolIcon },
             { id: 'skills', label: '技能', icon: skillIcon },
             { id: 'knowledge', label: '知识库', icon: bookIcon },
+            { id: 'history', label: '题目记录', icon: historyIcon },
           ] as const).map((t) => (
             <button
               key={t.id}
@@ -47,6 +49,7 @@ export function ResourceManager() {
         {tab === 'tools' && <ToolsPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'knowledge' && <KnowledgePanel />}
+        {tab === 'history' && <HistoryPanel />}
       </div>
     </div>
   );
@@ -527,6 +530,215 @@ function KnowledgePanel() {
 }
 
 // ============================================================
+// History Panel — Saved problems for review
+// ============================================================
+function HistoryPanel() {
+  const [history, setHistory] = useState<SavedProblem[]>(() => getProblemHistory().getAll());
+  const [filter, setFilter] = useState<ProblemStatus | 'all'>('all');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    setHistory(getProblemHistory().getAll());
+  }, []);
+
+  const stats = getProblemHistory().getStats();
+
+  const filtered = filter === 'all' ? history : history.filter((p) => p.status === filter);
+
+  const handleDelete = useCallback((id: string) => {
+    getProblemHistory().delete(id);
+    refresh();
+  }, [refresh]);
+
+  const handleClear = useCallback(() => {
+    getProblemHistory().clear();
+    refresh();
+  }, [refresh]);
+
+  const statusConfig: Record<ProblemStatus, { label: string; color: string; bg: string }> = {
+    solved: { label: '已通过', color: 'text-success', bg: 'bg-success/15' },
+    attempted: { label: '尝试中', color: 'text-warning', bg: 'bg-warning/15' },
+    unsolved: { label: '未通过', color: 'text-danger', bg: 'bg-danger/15' },
+  };
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-6">
+      {/* Stats */}
+      <div className="grid grid-cols-4 gap-3">
+        <div className="rounded-xl border border-border bg-card p-4 text-center">
+          <div className="text-2xl font-bold text-foreground">{stats.total}</div>
+          <div className="text-xs text-muted">总计</div>
+        </div>
+        <div className="rounded-xl border border-border bg-card p-4 text-center">
+          <div className="text-2xl font-bold text-success">{stats.solved}</div>
+          <div className="text-xs text-muted">已通过</div>
+        </div>
+        <div className="rounded-xl border border-border bg-card p-4 text-center">
+          <div className="text-2xl font-bold text-warning">{stats.attempted}</div>
+          <div className="text-xs text-muted">尝试中</div>
+        </div>
+        <div className="rounded-xl border border-border bg-card p-4 text-center">
+          <div className="text-2xl font-bold text-danger">{stats.unsolved}</div>
+          <div className="text-xs text-muted">未通过</div>
+        </div>
+      </div>
+
+      {/* Filter + Clear */}
+      <div className="flex items-center justify-between">
+        <div className="flex gap-1 rounded-xl border border-border bg-card p-1">
+          {([
+            { id: 'all' as const, label: '全部' },
+            { id: 'solved' as const, label: '已通过' },
+            { id: 'attempted' as const, label: '尝试中' },
+            { id: 'unsolved' as const, label: '未通过' },
+          ]).map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setFilter(f.id)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                filter === f.id ? 'bg-accent/20 text-accent' : 'text-muted hover:text-foreground'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        {history.length > 0 && (
+          <button
+            onClick={handleClear}
+            className="rounded-lg border border-danger/30 px-3 py-1.5 text-xs text-danger transition-colors hover:bg-danger/10"
+          >
+            清空记录
+          </button>
+        )}
+      </div>
+
+      {/* List */}
+      {filtered.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border bg-card/50 py-12 text-center">
+          <p className="text-sm text-muted">
+            {history.length === 0 ? '还没有做过题目' : '该状态下没有题目'}
+          </p>
+          <p className="mt-1 text-xs text-muted/60">
+            {history.length === 0 ? '在练习台运行代码后会自动保存到此处' : '试试其他筛选条件'}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((entry) => {
+            const isExpanded = expanded === entry.id;
+            const sc = statusConfig[entry.status];
+            const topic = getTopicById(entry.problem.topicId);
+            const passRate = entry.lastResult?.testResults
+              ? `${entry.lastResult.testResults.passed}/${entry.lastResult.testResults.total}`
+              : '—';
+
+            return (
+              <div key={entry.id} className="rounded-xl border border-border bg-card">
+                <div
+                  className="flex cursor-pointer items-center justify-between p-4"
+                  onClick={() => setExpanded(isExpanded ? null : entry.id)}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className={`rounded-md px-2 py-1 text-[10px] font-medium ${sc.bg} ${sc.color}`}>
+                      {sc.label}
+                    </span>
+                    <div>
+                      <h3 className="text-sm font-medium text-foreground">{entry.problem.title}</h3>
+                      <div className="flex items-center gap-2 text-xs text-muted">
+                        <span>{topic?.name || entry.problem.topicId}</span>
+                        <span>·</span>
+                        <span>{'⭐'.repeat(entry.problem.difficulty)}</span>
+                        <span>·</span>
+                        <span>尝试 {entry.attempts} 次</span>
+                        <span>·</span>
+                        <span>{new Date(entry.savedAt).toLocaleDateString('zh-CN')}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-md bg-card-hover px-2 py-1 text-[10px] text-muted">
+                      通过 {passRate}
+                    </span>
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className={`text-muted transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                    >
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </div>
+                </div>
+                {isExpanded && (
+                  <div className="border-t border-border p-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted">
+                          题目描述
+                        </p>
+                        <p className="text-xs text-muted-foreground line-clamp-4">
+                          {entry.problem.description}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted">
+                          你的代码
+                        </p>
+                        <pre className="overflow-x-auto rounded-lg bg-background/50 p-2 text-[10px] text-muted-foreground max-h-32">
+                          {entry.userCode.slice(0, 500)}
+                        </pre>
+                      </div>
+                    </div>
+                    {entry.lastResult?.testResults?.failures &&
+                      entry.lastResult.testResults.failures.length > 0 && (
+                        <div className="mt-3">
+                          <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted">
+                            失败用例
+                          </p>
+                          <div className="space-y-1">
+                            {entry.lastResult.testResults.failures.slice(0, 3).map((f, i) => (
+                              <div key={i} className="rounded-lg bg-danger/5 px-3 py-1.5 text-[10px]">
+                                <span className="text-muted">输入：</span>
+                                <code className="text-foreground">{f.input}</code>
+                                <span className="text-muted"> → 期望：</span>
+                                <code className="text-success">{f.expected}</code>
+                                <span className="text-muted"> 实际：</span>
+                                <code className="text-danger">{f.actual}</code>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    <div className="mt-3 flex items-center justify-between">
+                      <div className="text-xs text-muted">
+                        复杂度：{entry.problem.timeComplexity} / {entry.problem.spaceComplexity}
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(entry.id);
+                        }}
+                        className="rounded-lg border border-danger/30 px-2.5 py-1 text-[10px] text-danger transition-colors hover:bg-danger/10"
+                      >
+                        删除记录
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // Icons
 // ============================================================
 const toolIcon = (
@@ -545,5 +757,13 @@ const bookIcon = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
     <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+  </svg>
+);
+
+const historyIcon = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 3v5h5" />
+    <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" />
+    <path d="M12 7v5l4 2" />
   </svg>
 );

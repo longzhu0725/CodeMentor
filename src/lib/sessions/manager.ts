@@ -1,4 +1,4 @@
-import { AgentMessage, LearnerState } from '@/types';
+import { AgentMessage, LearnerState, AlgorithmProblem } from '@/types';
 import { createDefaultLearnerState } from '@/lib/memory/learner-state';
 
 // ============================================================
@@ -15,6 +15,8 @@ export interface ChatSession {
   updatedAt: number;
   messages: AgentMessage[];
   learnerState: LearnerState;
+  problem?: AlgorithmProblem | null;
+  code?: string;
 }
 
 const SESSIONS_KEY = 'codementor:sessions:v1';
@@ -160,12 +162,14 @@ export class SessionManager {
     return true;
   }
 
-  updateSession(id: string, updates: Partial<Pick<ChatSession, 'messages' | 'learnerState' | 'title'>>): void {
+  updateSession(id: string, updates: Partial<Pick<ChatSession, 'messages' | 'learnerState' | 'title' | 'problem' | 'code'>>): void {
     const session = this.sessions.get(id);
     if (!session) return;
     if (updates.messages) session.messages = updates.messages;
     if (updates.learnerState) session.learnerState = updates.learnerState;
     if (updates.title) session.title = updates.title;
+    if ('problem' in updates) session.problem = updates.problem;
+    if ('code' in updates) session.code = updates.code;
     session.updatedAt = Date.now();
 
     // Auto-generate title from first user message if still default

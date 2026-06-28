@@ -208,3 +208,18 @@ export interface UITab {
   label: string;
   icon: string;
 }
+
+// --- Problem History Types ---
+
+export type ProblemStatus = 'solved' | 'attempted' | 'unsolved';
+
+export interface SavedProblem {
+  id: string;
+  problem: AlgorithmProblem;
+  userCode: string;
+  lastResult: CodeExecutionResult | null;
+  status: ProblemStatus;
+  savedAt: number;
+  sessionTitle?: string;
+  attempts: number;
+}

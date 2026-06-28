@@ -12,6 +12,7 @@ import {
 } from '@/types';
 import type { AppSettings } from '@/components/SettingsModal';
 import { callBrowserLLM } from '@/lib/llm/browser-client';
+import { quickValidate } from '@/lib/problem-validator';
 
 export interface AgentTrailItem {
   agent: AgentRole;
@@ -217,7 +218,18 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         }
 
         if (data.problem) {
-          setCurrentProblem(data.problem);
+          // Validate problem structure before showing to user.
+          // If validation fails, fall back to local problem bank.
+          if (quickValidate(data.problem)) {
+            setCurrentProblem(data.problem);
+          } else {
+            // Structure validation failed — use a local problem instead
+            const { getRandomProblem } = await import('@/lib/knowledge/problems');
+            const localProblem = getRandomProblem();
+            setCurrentProblem(localProblem);
+            // Append a note about the fallback
+            assistantMessage.content += '\n\n> ⚠️ AI 生成的题目未通过质量验证，已从本地题库为你选取一道替代题目。';
+          }
         }
 
         if (data.assessment && context?.executionResult) {

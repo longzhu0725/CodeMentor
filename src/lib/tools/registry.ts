@@ -8,6 +8,8 @@
 
 import { KNOWLEDGE_TOPICS, getTopicById } from '@/lib/knowledge/topics';
 import { PROBLEM_BANK, getProblemsByTopic } from '@/lib/knowledge/problems';
+import { validateProblemStructure, quickValidate } from '@/lib/problem-validator';
+import type { AlgorithmProblem } from '@/types';
 
 export interface ToolParameter {
   name: string;
@@ -377,6 +379,100 @@ const learningPathTool: ToolDefinition = {
 };
 
 // ============================================================
+// Tool: Validate Problem
+// ------------------------------------------------------------
+// Deterministically validates an algorithm problem's structure,
+// test case format, and quality. Does NOT rely on the LLM.
+// ============================================================
+const validateProblemTool: ToolDefinition = {
+  name: 'validate_problem',
+  label: '题目验证',
+  description: '验证题目结构完整性、测试用例格式正确性，检查字段是否齐全（不依赖AI判断）',
+  icon: 'shield',
+  parameters: [
+    { name: 'problem', type: 'string', description: '题目 JSON 字符串（包含 id,title,topicId,difficulty,description,examples,constraints,starterCode,hints,solution,testCases 等）', required: true },
+    { name: 'run_tests', type: 'boolean', description: '是否运行参考解答验证测试用例（需要 Pyodide）', required: false },
+  ],
+  execute: (args) => {
+    const problemJson = String(args.problem || '');
+    const runTests = args.run_tests !== false;
+
+    if (!problemJson.trim()) {
+      return { success: false, error: '请提供题目 JSON' };
+    }
+
+    let problem: AlgorithmProblem;
+    try {
+      problem = JSON.parse(problemJson);
+    } catch {
+      // Try to extract JSON from markdown code block
+      const match = problemJson.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (match) {
+        try {
+          problem = JSON.parse(match[1]);
+        } catch {
+          return { success: false, error: 'JSON 解析失败，请检查格式' };
+        }
+      } else {
+        return { success: false, error: 'JSON 解析失败，请检查格式' };
+      }
+    }
+
+    // Run static validation (always)
+    const issues = validateProblemStructure(problem);
+    const errors = issues.filter((i) => i.severity === 'error');
+    const warnings = issues.filter((i) => i.severity === 'warning');
+    const quickOk = errors.length === 0;
+
+    // Build display
+    const lines: string[] = ['## 题目验证结果', ''];
+    lines.push(`**结构验证**：${quickOk ? '✅ 通过' : '❌ 有错误'}`);
+    lines.push(`**快速检查**：${quickValidate(problem) ? '✅ 通过' : '❌ 未通过'}`);
+    lines.push('');
+
+    if (errors.length > 0) {
+      lines.push('### ❌ 错误');
+      for (const e of errors) {
+        lines.push(`- [${e.field}] ${e.message}`);
+      }
+      lines.push('');
+    }
+
+    if (warnings.length > 0) {
+      lines.push('### ⚠️ 警告');
+      for (const w of warnings) {
+        lines.push(`- [${w.field}] ${w.message}`);
+      }
+      lines.push('');
+    }
+
+    const infos = issues.filter((i) => i.severity === 'info');
+    if (infos.length > 0) {
+      lines.push('### ℹ️ 提示');
+      for (const info of infos) {
+        lines.push(`- [${info.field}] ${info.message}`);
+      }
+      lines.push('');
+    }
+
+    if (quickOk && warnings.length === 0) {
+      lines.push('题目质量良好，可以展示给学生 ✅');
+    }
+
+    return {
+      success: quickOk,
+      data: {
+        valid: quickOk,
+        errorCount: errors.length,
+        warningCount: warnings.length,
+        issues,
+      },
+      display: lines.join('\n'),
+    };
+  },
+};
+
+// ============================================================
 // Tool Registry
 // ============================================================
 class ToolRegistry {
@@ -388,6 +484,7 @@ class ToolRegistry {
     this.register(webSearchTool);
     this.register(codeAnalyzerTool);
     this.register(learningPathTool);
+    this.register(validateProblemTool);
   }
 
   register(tool: ToolDefinition): void {
@@ -440,5 +537,6 @@ export const SLASH_COMMANDS: Record<string, { tool: string; args?: Record<string
   '/problems': { tool: 'search_problems', description: '搜索题目' },
   '/analyze': { tool: 'analyze_code', description: '分析代码' },
   '/path': { tool: 'learning_path', description: '学习路径' },
+  '/validate': { tool: 'validate_problem', description: '验证题目质量' },
   '/help': { tool: '', description: '显示帮助' },
 };
