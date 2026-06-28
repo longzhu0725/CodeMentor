@@ -59,6 +59,17 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     learningOrder: 5,
   },
   {
+    id: 'sliding-window',
+    name: '滑动窗口',
+    category: '基础算法',
+    difficulty: 3,
+    prerequisites: ['two-pointers', 'hash'],
+    description: '滑动窗口是双指针的进阶，用于解决子串/子数组问题，维护一个动态窗口。',
+    keyPoints: ['左右指针维护窗口', '哈希表记录窗口状态', '窗口扩张与收缩', '固定窗口vs可变窗口'],
+    commonMistakes: ['窗口收缩条件错误', '左指针更新位置不对', '遗漏最后一个窗口'],
+    learningOrder: 6,
+  },
+  {
     id: 'recursion',
     name: '递归',
     category: '核心思想',
@@ -67,7 +78,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '递归是算法思维的基石，理解递归是掌握树、图、DP 的前提。',
     keyPoints: ['基线条件', '递推关系', '递归调用栈', '递归转迭代'],
     commonMistakes: ['缺少基线条件导致栈溢出', '重复计算', '返回值未正确传递'],
-    learningOrder: 6,
+    learningOrder: 7,
   },
   {
     id: 'linked-list',
@@ -78,7 +89,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '链表考察指针操作能力，是理解更复杂数据结构的基础。',
     keyPoints: ['虚拟头节点', '快慢指针找中点', '链表反转', '环检测'],
     commonMistakes: ['指针丢失', '未处理空链表', '环检测忘记终止条件'],
-    learningOrder: 7,
+    learningOrder: 8,
   },
   {
     id: 'stack-queue',
@@ -89,7 +100,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '栈和队列是 LIFO/FIFO 结构，在表达式求值、BFS 中有核心应用。',
     keyPoints: ['单调栈', '括号匹配', '队列实现栈', '滑动窗口最大值'],
     commonMistakes: ['栈空时弹出', '单调栈方向错误', '队列边界处理'],
-    learningOrder: 8,
+    learningOrder: 9,
   },
   {
     id: 'tree',
@@ -100,7 +111,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '树是递归思想的最佳实践场景，掌握遍历和递归思维。',
     keyPoints: ['前中后序遍历', '层序遍历 BFS', '递归视角', 'BST 性质'],
     commonMistakes: ['空节点未处理', '递归终止条件错误', 'BST 性质误用'],
-    learningOrder: 9,
+    learningOrder: 10,
   },
   {
     id: 'graph',
@@ -111,7 +122,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '图的遍历和最短路径是面试和竞赛的核心内容。',
     keyPoints: ['邻接表表示', 'DFS/BFS 遍历', '拓扑排序', '并查集'],
     commonMistakes: [' visited 数组遗漏', '有向图/无向图混淆', '环检测错误'],
-    learningOrder: 10,
+    learningOrder: 11,
   },
   {
     id: 'bfs-dfs',
@@ -122,7 +133,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: 'BFS 和 DFS 是图/树遍历的两大基本策略，各有适用场景。',
     keyPoints: ['BFS 求最短路径', 'DFS 求连通分量', '层序遍历', '回溯剪枝'],
     commonMistakes: ['BFS 忘记标记已访问', 'DFS 栈溢出', '方向数组写错'],
-    learningOrder: 11,
+    learningOrder: 12,
   },
   {
     id: 'backtracking',
@@ -133,7 +144,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '回溯是 DFS 的应用，用于穷举所有可能解，关键是剪枝优化。',
     keyPoints: ['选择-递归-撤销', '排列/组合/子集', '剪枝优化', 'N皇后问题'],
     commonMistakes: ['忘记撤销选择', '剪枝条件错误', '重复解未去重'],
-    learningOrder: 12,
+    learningOrder: 13,
   },
   {
     id: 'greedy',
@@ -144,7 +155,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '贪心算法在每步选择局部最优，适用于有贪心选择性质的问题。',
     keyPoints: ['贪心选择性质', '最优子结构', '区间调度', '霍夫曼编码'],
     commonMistakes: ['错误假设贪心成立', '未证明贪心正确性', '排序方向错误'],
-    learningOrder: 13,
+    learningOrder: 14,
   },
   {
     id: 'dp',
@@ -155,7 +166,7 @@ export const KNOWLEDGE_TOPICS: KnowledgeTopic[] = [
     description: '动态规划是面试和竞赛的重中之重，掌握状态定义和转移方程。',
     keyPoints: ['状态定义', '状态转移方程', '初始化', '空间优化（滚动数组）', '背包问题'],
     commonMistakes: ['状态定义不当', '转移遗漏', '初始化错误', '边界处理'],
-    learningOrder: 14,
+    learningOrder: 15,
   },
 ];
 

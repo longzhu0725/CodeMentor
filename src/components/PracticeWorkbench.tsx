@@ -118,7 +118,8 @@ function ResultsPanel({ result }: { result: CodeExecutionResult | null }) {
           <div className="pixel-avatar-box mx-auto mb-3 h-12 w-12">
             <PixelAvatar role="examiner" size={32} />
           </div>
-          <p>点击「运行」执行代码，或「提交」运行测试用例</p>
+          <p>点击「运行」用示例输入执行代码</p>
+          <p className="mt-1 text-xs text-muted/70">或点击「提交评测」运行全部测试用例</p>
         </div>
       </div>
     );
@@ -126,8 +127,8 @@ function ResultsPanel({ result }: { result: CodeExecutionResult | null }) {
 
   return (
     <div className="space-y-3 p-3 text-sm">
-      {/* Test summary */}
-      {result.testResults && (
+      {/* Status banner */}
+      {result.testResults ? (
         <div
           className={`rounded-xl border p-3 ${
             result.testResults.passed === result.testResults.total
@@ -164,6 +165,14 @@ function ResultsPanel({ result }: { result: CodeExecutionResult | null }) {
             />
           </div>
         </div>
+      ) : result.error ? (
+        <div className="rounded-xl border border-danger/40 bg-danger/10 p-3">
+          <span className="font-semibold text-danger">执行出错</span>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-success/40 bg-success/10 p-3">
+          <span className="font-semibold text-success">代码执行成功</span>
+        </div>
       )}
 
       {/* Failures */}
@@ -195,30 +204,32 @@ function ResultsPanel({ result }: { result: CodeExecutionResult | null }) {
         </div>
       )}
 
-      {/* Stdout */}
-      {result.output && !result.testResults && (
+      {/* Stdout / Return value (always show when there's output) */}
+      {result.output && (
         <div>
-          <div className="mb-1 text-xs font-medium text-muted">输出</div>
-          <pre className="max-h-48 overflow-auto rounded-lg border border-border bg-background p-2.5 font-mono text-xs text-foreground">
-            {result.output}
+          <div className="mb-1 text-xs font-medium text-muted">
+            {result.testResults ? '输出信息' : '程序输出'}
+          </div>
+          <pre className="max-h-48 overflow-auto rounded-lg border border-border bg-background p-2.5 font-mono text-xs text-foreground whitespace-pre-wrap">
+{result.output}
           </pre>
         </div>
       )}
 
-      {/* Error */}
+      {/* Error details */}
       {result.error && (
         <div>
-          <div className="mb-1 text-xs font-medium text-danger">错误</div>
-          <pre className="max-h-48 overflow-auto rounded-lg border border-danger/30 bg-danger/5 p-2.5 font-mono text-xs text-danger/90">
-            {result.error}
+          <div className="mb-1 text-xs font-medium text-danger">错误详情</div>
+          <pre className="max-h-64 overflow-auto rounded-lg border border-danger/30 bg-danger/5 p-2.5 font-mono text-xs text-danger/90 whitespace-pre-wrap">
+{result.error}
           </pre>
         </div>
       )}
 
-      {/* Success / no test results message */}
+      {/* Empty success state (no output, no tests, no error) */}
       {!result.testResults && !result.error && !result.output && (
         <div className="rounded-lg border border-success/30 bg-success/10 p-3 text-success">
-          代码执行完成（无输出）。
+          代码执行完成（无输出）。尝试添加 print() 语句查看结果。
         </div>
       )}
     </div>
@@ -269,7 +280,21 @@ export function PracticeWorkbench({
     try {
       await loadPyodide();
       setPyodideLoading(false);
-      const result = await runCode(code);
+      // If we have a problem with examples, run the function with the first example input
+      // so the user sees actual output instead of "no output" from just defining the function.
+      const sampleInput = problem?.examples?.[0]?.input;
+      // Parse the example input to extract arguments (strip "nums = " / "target = " etc.)
+      let parsedInput: string | undefined;
+      if (sampleInput) {
+        // Convert "nums = [2,7,11,15], target = 9" -> "[2,7,11,15], 9"
+        parsedInput = sampleInput
+          .replace(/[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*/g, '')
+          .trim();
+      }
+      const result = await runCode(code, {
+        functionName: functionName,
+        sampleInput: parsedInput,
+      });
       setLocalResult(result);
       onRun(result);
     } catch (err) {

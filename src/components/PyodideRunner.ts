@@ -4,34 +4,37 @@ import { CodeExecutionResult } from '@/types';
 // PyodideRunner
 // ------------------------------------------------------------
 // Runs Python code in the browser via Pyodide (loaded from CDN).
-//
-// To make timeouts reliable (including infinite loops in student
-// code), Pyodide runs inside a Web Worker spawned from an inline
-// Blob. On timeout the main thread terminates the worker, which
-// interrupts any blocking execution. Pyodide is reloaded lazily
-// on the next call after a termination.
+// Uses a Web Worker for reliable timeout handling.
 //
 // Exported API:
 //   loadPyodide()                                  -> Promise<void>
-//   runCode(code, timeoutMs?)                       -> Promise<CodeExecutionResult>
-//   runTestCases(code, testCases, functionName, timeoutMs?)
+//   runCode(code, options?)                        -> Promise<CodeExecutionResult>
+//   runTestCases(code, testCases, functionName, options?)
 //                                                   -> Promise<CodeExecutionResult>
 // ============================================================
 
 const PYODIDE_CDN = 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full/';
 
-// The test-case shape coming from the problem bank.
 export interface ProblemTestCase {
   input: string;
   expectedOutput: string;
   isHidden?: boolean;
 }
 
+export interface RunCodeOptions {
+  timeoutMs?: number;
+  /** If provided, auto-invoke this function with the sample input after exec. */
+  functionName?: string;
+  /** Sample input to pass to functionName (Python literal string, e.g. "[2,7,11,15], 9"). */
+  sampleInput?: string;
+}
+
 interface WorkerRequest {
   id: number;
-  type: 'load' | 'run' | 'runTests';
+  type: 'load' | 'run' | 'runTests' | 'runSample';
   code?: string;
   functionName?: string;
+  sampleInput?: string;
   testCases?: { input: string; expected: string }[];
 }
 
@@ -46,6 +49,8 @@ interface RunResult {
   success?: boolean;
   output?: string;
   error?: string;
+  calledFunction?: boolean;
+  returnValue?: unknown;
   testResults?: {
     passed: number;
     total: number;
@@ -54,11 +59,7 @@ interface RunResult {
 }
 
 // ------------------------------------------------------------
-// Worker source. Built as a template literal; the only
-// interpolation is the CDN URL. Python harnesses are embedded as
-// escaped-backtick template literals — they contain no `${` and no
-// backslash escapes inside Python string literals, so the outer
-// template literal leaves them untouched.
+// Worker source (inline Blob)
 // ------------------------------------------------------------
 const WORKER_SOURCE = `
 const PYODIDE_CDN = ${JSON.stringify(PYODIDE_CDN)};
@@ -73,13 +74,32 @@ function getPyodide() {
 }
 
 // Harness: run arbitrary student code, capture stdout + errors.
-const RUN_HARNESS = \`import sys, io, json, traceback as _tb
-_result = {"output": "", "error": ""}
+// If functionName and sampleInput are provided, also call the function.
+const RUN_HARNESS = \`import sys, io, json, traceback as _tb, ast as _ast
+_result = {"output": "", "error": "", "returnValue": null, "calledFunction": False}
 _ns = {}
 _buf = io.StringIO()
 sys.stdout = _buf
 try:
     exec(userCode, _ns)
+    if funcName and sampleInput is not None:
+        _fn = _ns.get(funcName)
+        if _fn is not None:
+            _result["calledFunction"] = True
+            try:
+                _parsed = _ast.literal_eval("(" + sampleInput + ",)")
+                _ret = _fn(*_parsed)
+                _result["returnValue"] = str(_ret)
+            except Exception as _call_err:
+                try:
+                    _parsed = _ast.literal_eval(sampleInput)
+                    if isinstance(_parsed, tuple):
+                        _ret = _fn(*list(_parsed))
+                    else:
+                        _ret = _fn(_parsed)
+                    _result["returnValue"] = str(_ret)
+                except Exception as _call_err2:
+                    _result["error"] = "调用函数时出错: " + _tb.format_exc()
 except Exception:
     _result["error"] = _tb.format_exc()
 finally:
@@ -92,8 +112,10 @@ const TEST_HARNESS = \`import json, ast, traceback as _tb
 
 def _serialize(obj):
     if obj is None:
-        return "None"
+        return None
     if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, (int, float, str)):
         return obj
     if isinstance(obj, list):
         return [_serialize(x) for x in obj]
@@ -106,25 +128,26 @@ def _serialize(obj):
             out.append(cur.val)
             cur = cur.next
         return out
-    return obj
+    return str(obj)
 
 def _to_listnode(values, cls):
+    if cls is None:
+        return values, False
     dummy = cls()
     cur = dummy
     for v in values:
         cur.next = cls(v)
         cur = cur.next
-    return dummy.next
+    return dummy.next, True
 
 def _adapt_args(args, ns):
     listnode = ns.get("ListNode")
-    if listnode is None:
-        return args, False
     new_args = []
     adapted = False
     for a in args:
-        if isinstance(a, list):
-            new_args.append(_to_listnode(a, listnode))
+        if isinstance(a, list) and listnode is not None:
+            ln, _ = _to_listnode(a, listnode)
+            new_args.append(ln)
             adapted = True
         else:
             new_args.append(a)
@@ -137,7 +160,7 @@ try:
     exec(userCode, _ns)
 except Exception:
     _result["success"] = False
-    _result["error"] = "代码加载失败: " + _tb.format_exc()
+    _result["error"] = "代码加载失败:\\n" + _tb.format_exc()
     _loaded = False
 
 if _loaded:
@@ -170,7 +193,8 @@ if _loaded:
                 _actual = _serialize(_res)
                 try:
                     _exp_val = ast.literal_eval(_exp)
-                    _ok = _actual == _exp_val
+                    _exp_serialized = _serialize(_exp_val)
+                    _ok = _actual == _exp_serialized
                 except Exception:
                     _ok = str(_actual).strip() == str(_exp).strip()
                 if _ok:
@@ -194,8 +218,10 @@ self.onmessage = async (e) => {
     }
     const pyodide = await getPyodide();
 
-    if (data.type === 'run') {
-      pyodide.globals.set('userCode', data.code);
+    if (data.type === 'run' || data.type === 'runSample') {
+      pyodide.globals.set('userCode', data.code || '');
+      pyodide.globals.set('funcName', data.functionName || '');
+      pyodide.globals.set('sampleInput', data.sampleInput !== undefined ? data.sampleInput : null);
       const resStr = pyodide.runPython(RUN_HARNESS);
       let res;
       try {
@@ -208,8 +234,8 @@ self.onmessage = async (e) => {
     }
 
     if (data.type === 'runTests') {
-      pyodide.globals.set('userCode', data.code);
-      pyodide.globals.set('funcName', data.functionName);
+      pyodide.globals.set('userCode', data.code || '');
+      pyodide.globals.set('funcName', data.functionName || 'solution');
       pyodide.globals.set('testCasesJson', JSON.stringify(data.testCases || []));
       const resStr = pyodide.runPython(TEST_HARNESS);
       let res;
@@ -248,7 +274,6 @@ class PyodideRunner {
     const blob = new Blob([WORKER_SOURCE], { type: 'application/javascript' });
     const url = URL.createObjectURL(blob);
     const worker = new Worker(url);
-    // The blob URL can be revoked once the worker has loaded.
     setTimeout(() => URL.revokeObjectURL(url), 10000);
 
     worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
@@ -283,7 +308,6 @@ class PyodideRunner {
     return this.worker;
   }
 
-  /** Load (or reuse) the Pyodide runtime inside the worker. */
   async load(): Promise<void> {
     if (this.readyPromise) return this.readyPromise;
     this.ensureWorker();
@@ -296,7 +320,6 @@ class PyodideRunner {
     }
   }
 
-  /** Whether the Pyodide runtime has been loaded already. */
   get isLoaded(): boolean {
     return this.readyPromise !== null;
   }
@@ -311,7 +334,6 @@ class PyodideRunner {
       const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
-          // Terminate to break any blocking / infinite-loop execution.
           this.terminate();
           reject(new Error(`代码执行超时（${timeoutMs / 1000} 秒）`));
         }
@@ -332,7 +354,6 @@ class PyodideRunner {
     });
   }
 
-  /** Abort the current worker and reject any pending requests. */
   private terminate(): void {
     if (this.worker) {
       this.worker.terminate();
@@ -345,14 +366,26 @@ class PyodideRunner {
     this.readyPromise = null;
   }
 
-  /** Run arbitrary Python code and capture its stdout / errors. */
-  async runCode(code: string, timeoutMs = 10000): Promise<CodeExecutionResult> {
+  /**
+   * Run Python code. If functionName + sampleInput are provided,
+   * the function is auto-invoked with the sample input after exec,
+   * and the return value is appended to stdout.
+   */
+  async runCode(code: string, options: RunCodeOptions = {}): Promise<CodeExecutionResult> {
+    const { timeoutMs = 10000, functionName, sampleInput } = options;
     await this.load();
-    const result = await this.request({ type: 'run', code }, timeoutMs);
+    const result = await this.request(
+      { type: 'run', code, functionName: functionName ?? undefined, sampleInput: sampleInput ?? undefined },
+      timeoutMs
+    );
     const res = result ?? {};
+    let output = res.output ?? '';
+    if (res.calledFunction && res.returnValue !== undefined && res.returnValue !== null) {
+      output = (output ? output + '\n' : '') + `>>> 返回值: ${res.returnValue}`;
+    }
     return {
       success: !res.error,
-      output: res.output ?? '',
+      output,
       error: res.error || undefined,
     };
   }
@@ -380,28 +413,24 @@ class PyodideRunner {
   }
 }
 
-// Module-level singleton. Construction is cheap (no browser APIs).
 const runner = new PyodideRunner();
 
-/** Preload the Pyodide runtime so the first run is fast. */
 export async function loadPyodide(): Promise<void> {
   return runner.load();
 }
 
-/** Run arbitrary Python code, returning captured stdout and errors. */
 export async function runCode(
   code: string,
-  timeoutMs = 10000
+  options?: RunCodeOptions
 ): Promise<CodeExecutionResult> {
-  return runner.runCode(code, timeoutMs);
+  return runner.runCode(code, options);
 }
 
-/** Run student code against test cases for a given function. */
 export async function runTestCases(
   code: string,
   testCases: ProblemTestCase[],
   functionName: string,
-  timeoutMs = 15000
+  timeoutMs?: number
 ): Promise<CodeExecutionResult> {
   return runner.runTestCases(code, testCases, functionName, timeoutMs);
 }

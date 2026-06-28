@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ViewMode, AlgorithmProblem, CodeExecutionResult } from '@/types';
+import { ViewMode, AlgorithmProblem, CodeExecutionResult, AgentMessage } from '@/types';
 import { useLearnerState } from '@/lib/hooks/useLearnerState';
 import { useChat } from '@/lib/hooks/useChat';
 import { Sidebar } from '@/components/Sidebar';
@@ -10,6 +10,8 @@ import { PracticeWorkbench } from '@/components/PracticeWorkbench';
 import { Dashboard } from '@/components/Dashboard';
 import { SettingsModal, AppSettings } from '@/components/SettingsModal';
 import { getRandomProblem } from '@/lib/knowledge/problems';
+import { sessionManager, ChatSession } from '@/lib/sessions/manager';
+import { toolRegistry, SLASH_COMMANDS } from '@/lib/tools/registry';
 
 const SETTINGS_KEY = 'codementor:settings:v1';
 
@@ -29,6 +31,10 @@ export default function Home() {
   const [executionResult, setExecutionResult] = useState<CodeExecutionResult | null>(null);
   const [problem, setProblem] = useState<AlgorithmProblem | null>(null);
 
+  // Multi-session state
+  const [activeSessionId, setActiveSessionId] = useState(sessionManager.getActiveSessionId());
+  const [sessions, setSessions] = useState<ChatSession[]>(() => sessionManager.getSessionsSorted());
+
   const learnerStateHook = useLearnerState();
   const { state: learnerState, updateState, recordAttempt, recordError } = learnerStateHook;
 
@@ -38,6 +44,46 @@ export default function Home() {
     settings,
     currentProblem: problem,
   });
+
+  // Refresh sessions list
+  const refreshSessions = useCallback(() => {
+    setSessions(sessionManager.getSessionsSorted());
+    setActiveSessionId(sessionManager.getActiveSessionId());
+  }, []);
+
+  const handleNewSession = useCallback(() => {
+    const newSession = sessionManager.createSession();
+    refreshSessions();
+    chat.clearChat();
+    setProblem(null);
+    setCode('');
+    setExecutionResult(null);
+    setView('chat');
+  }, [chat, refreshSessions]);
+
+  const handleSessionChange = useCallback((session: ChatSession) => {
+    sessionManager.setActiveSession(session.id);
+    refreshSessions();
+    // Load session messages into chat
+    chat.clearChat();
+    if (session.messages.length > 0) {
+      // We need to reload messages - useChat doesn't expose a setter,
+      // so we'll rely on the session's learnerState
+      setProblem(null);
+      setCode('');
+      setExecutionResult(null);
+    }
+    setView('chat');
+  }, [chat, refreshSessions]);
+
+  const handleDeleteSession = useCallback((id: string) => {
+    sessionManager.deleteSession(id);
+    refreshSessions();
+    chat.clearChat();
+    setProblem(null);
+    setCode('');
+    setExecutionResult(null);
+  }, [chat, refreshSessions]);
 
   // Sync problem from chat to practice view
   useEffect(() => {
@@ -77,20 +123,102 @@ export default function Home() {
     }));
   }, [settings.targetGroup, settings.hintLevel, updateState]);
 
-  const handleSend = useCallback(
-    (text: string) => {
-      // If user wants to practice, switch to practice view after response
-      const isPractice = text.trim().toLowerCase().startsWith('/practice');
-      const isPlan = text.trim().toLowerCase().startsWith('/plan');
-
-      chat.sendMessage(text).then(() => {
-        if (isPractice) {
-          // Give a moment for the problem to be set
-          setTimeout(() => setView('practice'), 500);
-        }
+  // Save session on chat state changes
+  useEffect(() => {
+    if (chat.messages.length > 1) {
+      sessionManager.updateSession(activeSessionId, {
+        messages: chat.messages as AgentMessage[],
+        learnerState,
       });
+    }
+  }, [chat.messages, learnerState, activeSessionId]);
+
+  const handleSend = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      const lowerText = trimmed.toLowerCase();
+
+      // Handle /help
+      if (lowerText === '/help') {
+        const helpContent = `## 可用命令与工具\n\n**斜杠命令：**\n${Object.entries(SLASH_COMMANDS)
+          .map(([cmd, info]) => `- \`${cmd}\` — ${info.description}`)
+          .join('\n')}\n\n**内置工具：**\n${toolRegistry
+          .list()
+          .map((t) => `- **${t.label}** — ${t.description}`)
+          .join('\n')}\n\n**示例：**\n- \`/search 动态规划入门\` — 网络搜索\n- \`/find 二分查找\` — 搜索知识库\n- \`/problems 动态规划\` — 查找相关题目\n- \`/analyze\`（在练习模式中分析代码）\n- \`/path 面试\` — 获取学习路径\n- \`/practice\` — 开始练习\n- \`/plan\` — 生成学习计划`;
+
+        chat.appendMessage({
+          role: 'user',
+          content: '/help',
+          timestamp: Date.now(),
+        });
+        chat.appendMessage({
+          role: 'assistant',
+          content: helpContent,
+          agentRole: 'orchestrator',
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      // Handle tool slash commands
+      for (const [cmd, info] of Object.entries(SLASH_COMMANDS)) {
+        if (!info.tool) continue;
+        if (lowerText === cmd || lowerText.startsWith(cmd + ' ')) {
+          const arg = trimmed.slice(cmd.length).trim();
+          chat.appendMessage({
+            role: 'user',
+            content: trimmed,
+            timestamp: Date.now(),
+          });
+
+          try {
+            let result;
+            switch (info.tool) {
+              case 'web_search':
+                result = await toolRegistry.execute('web_search', { query: arg || '算法学习' });
+                break;
+              case 'search_knowledge':
+                result = toolRegistry.execute('search_knowledge', { query: arg });
+                break;
+              case 'search_problems':
+                result = toolRegistry.execute('search_problems', { topic: arg });
+                break;
+              case 'analyze_code':
+                result = toolRegistry.execute('analyze_code', { code, topicId: problem?.topicId });
+                break;
+              case 'learning_path':
+                result = toolRegistry.execute('learning_path', { goal: arg || '入门' });
+                break;
+            }
+            if (result) {
+              const res = await result;
+              chat.appendMessage({
+                role: 'assistant',
+                content: res.success ? (res.display || '工具执行完成') : `工具执行失败：${res.error}`,
+                agentRole: 'orchestrator',
+                timestamp: Date.now(),
+              });
+            }
+          } catch (err) {
+            chat.appendMessage({
+              role: 'assistant',
+              content: `工具执行出错：${err instanceof Error ? err.message : String(err)}`,
+              agentRole: 'orchestrator',
+              timestamp: Date.now(),
+            });
+          }
+          return;
+        }
+      }
+
+      const isPractice = lowerText.startsWith('/practice');
+      await chat.sendMessage(text);
+      if (isPractice) {
+        setTimeout(() => setView('practice'), 500);
+      }
     },
-    [chat]
+    [chat, code, problem]
   );
 
   const handleRun = useCallback((result: CodeExecutionResult) => {
@@ -101,7 +229,6 @@ export default function Home() {
     (result: CodeExecutionResult) => {
       setExecutionResult(result);
 
-      // Record attempt in learner state
       if (problem) {
         const quality = result.testResults
           ? Math.round((result.testResults.passed / result.testResults.total) * 5)
@@ -111,7 +238,6 @@ export default function Home() {
 
         recordAttempt(problem.topicId, quality);
 
-        // Record errors if any
         if (result.testResults && result.testResults.failures.length > 0) {
           recordError({
             problemId: problem.id,
@@ -131,21 +257,18 @@ export default function Home() {
         }
       }
 
-      // Send code + results to chat for assessment
       chat.sendMessage('请评估我的代码', {
         code,
         executionResult: result,
         problem: problem || undefined,
       });
 
-      // Switch to chat to see assessment
       setView('chat');
     },
     [code, problem, chat, recordAttempt, recordError]
   );
 
   const handleStartPractice = useCallback(() => {
-    // If no problem, get a random one from the bank
     if (!problem) {
       const random = getRandomProblem();
       setProblem(random);
@@ -161,16 +284,19 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg-base text-text-primary">
-      {/* Sidebar */}
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
       <Sidebar
         activeView={view}
         onViewChange={setView}
         onOpenSettings={() => setSettingsOpen(true)}
         streak={learnerState.behaviorProfile.streak}
+        activeSessionId={activeSessionId}
+        onSessionChange={handleSessionChange}
+        onNewSession={handleNewSession}
+        onDeleteSession={handleDeleteSession}
+        sessions={sessions}
       />
 
-      {/* Main Content */}
       <main className="flex-1 overflow-hidden">
         {view === 'chat' && (
           <ChatPanel
@@ -195,7 +321,6 @@ export default function Home() {
         {view === 'dashboard' && <Dashboard learnerState={learnerState} />}
       </main>
 
-      {/* Settings Modal */}
       <SettingsModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
