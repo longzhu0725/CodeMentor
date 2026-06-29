@@ -8,6 +8,7 @@ import {
   StreamCallbacks,
   AgentActivity,
   AgentRole,
+  AgentParadigm,
 } from '@/types';
 import {
   LLMProvider,
@@ -75,6 +76,22 @@ const PRACTICE_SCHEMA_PROMPT = `你正在生成一道 Python 算法练习题。�
 // ============================================================
 // Activity helpers
 // ============================================================
+
+const AGENT_PARADIGM: Record<AgentRole, string> = {
+  orchestrator: 'ReAct',
+  lecturer: 'Socratic',
+  problem_setter: 'Plan-and-Solve',
+  examiner: 'Reflection',
+  path_planner: 'Plan-and-Solve',
+};
+
+const AGENT_NAMES: Record<AgentRole, string> = {
+  orchestrator: '总控',
+  lecturer: '讲师',
+  problem_setter: '出题官',
+  examiner: '考官',
+  path_planner: '规划师',
+};
 
 let activityCounter = 0;
 function newActivity(
@@ -530,11 +547,12 @@ async function callLLMStreaming(
           if (reasoningDelta) {
             fullReasoning += reasoningDelta;
             if (!reasoningActivity) {
+              const paradigm = AGENT_PARADIGM[agentRole] as AgentParadigm;
               reasoningActivity = newActivity(
                 agentRole,
                 'thinking',
-                '推理中…',
-                { detail: '' }
+                `${AGENT_NAMES[agentRole]} · ${paradigm} 推理中…`,
+                { detail: '', paradigm }
               );
               callbacks.onActivity?.(reasoningActivity);
             }
@@ -544,7 +562,7 @@ async function callLLMStreaming(
                 : fullReasoning;
             callbacks.onActivity?.({
               ...reasoningActivity,
-              label: 'LLM 推理中…',
+              label: `${AGENT_NAMES[agentRole]} · ${reasoningActivity.paradigm} 推理中…`,
               detail: preview,
             });
           }
@@ -561,7 +579,7 @@ async function callLLMStreaming(
                 finishActivity(
                   { ...reasoningActivity, detail: preview },
                   'success',
-                  `推理过程（${fullReasoning.length} 字）`
+                  `${reasoningActivity.paradigm} 推理过程（${fullReasoning.length} 字）`
                 )
               );
               reasoningActivity = null;
@@ -591,7 +609,7 @@ async function callLLMStreaming(
       finishActivity(
         { ...reasoningActivity, detail: preview },
         fullContent ? 'success' : 'warning',
-        `推理过程（${fullReasoning.length} 字）`
+        `${reasoningActivity.paradigm} 推理过程（${fullReasoning.length} 字）`
       )
     );
   }

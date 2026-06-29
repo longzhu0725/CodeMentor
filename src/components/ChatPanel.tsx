@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { AgentMessage, AgentRole, AgentActivity } from '@/types';
+import { AgentMessage, AgentRole, AgentActivity, AgentParadigm } from '@/types';
 import { PixelAvatar, MascotRole } from './PixelAvatar';
 
 export interface ChatPanelProps {
@@ -23,12 +23,15 @@ export interface ChatPanelProps {
   streamingAgent?: AgentRole | null;
 }
 
-const AGENT_META: Record<AgentRole, { name: string; role: MascotRole; color: string }> = {
-  orchestrator: { name: '总控', role: 'orchestrator', color: '#818cf8' },
-  lecturer: { name: '讲师', role: 'lecturer', color: '#34d399' },
-  problem_setter: { name: '出题官', role: 'problem_setter', color: '#fbbf24' },
-  examiner: { name: '考官', role: 'examiner', color: '#f87171' },
-  path_planner: { name: '规划师', role: 'path_planner', color: '#fb923c' },
+const AGENT_META: Record<
+  AgentRole,
+  { name: string; role: MascotRole; color: string; paradigm: AgentParadigm; paradigmDesc: string }
+> = {
+  orchestrator: { name: '总控', role: 'orchestrator', color: '#818cf8', paradigm: 'ReAct', paradigmDesc: '观察→推理→行动→观察的循环调度' },
+  lecturer: { name: '讲师', role: 'lecturer', color: '#34d399', paradigm: 'Socratic', paradigmDesc: '苏格拉底式提问，引导学生自己发现答案' },
+  problem_setter: { name: '出题官', role: 'problem_setter', color: '#fbbf24', paradigm: 'Plan-and-Solve', paradigmDesc: '先规划题目结构，再生成完整题目' },
+  examiner: { name: '考官', role: 'examiner', color: '#f87171', paradigm: 'Reflection', paradigmDesc: '评估→反思→改进的迭代优化' },
+  path_planner: { name: '规划师', role: 'path_planner', color: '#fb923c', paradigm: 'Plan-and-Solve', paradigmDesc: '先制定学习路线图，再输出详细路径' },
 };
 
 const QUICK_ACTIONS: { cmd: string; label: string; desc: string }[] = [
@@ -480,10 +483,12 @@ function ThinkingChain({
               return (
                 <span
                   key={role}
+                  title={meta.paradigmDesc}
                   className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium"
                   style={{ color: meta.color, backgroundColor: `${meta.color}18` }}
                 >
                   {meta.name}
+                  <span className="opacity-70">·{meta.paradigm}</span>
                 </span>
               );
             })}
@@ -542,6 +547,7 @@ function ThinkingChain({
                       {icon}
                     </span>
                     <span
+                      title={meta.paradigmDesc}
                       className="shrink-0 rounded px-1 text-[9.5px] font-semibold uppercase tracking-wide"
                       style={{
                         color: meta.color,
@@ -549,6 +555,7 @@ function ThinkingChain({
                       }}
                     >
                       {meta.name}
+                      <span className="opacity-70">·{meta.paradigm}</span>
                     </span>
                     {typeLabel && (
                       <span className="shrink-0 text-[10px] text-muted/70">

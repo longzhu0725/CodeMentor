@@ -2,7 +2,7 @@
 
 ## 多智能体架构
 
-CodeMentor 采用**总控-专家**模式的多 Agent 架构，由一个总控（Orchestrator）根据用户意图派遣不同的专家 Agent 处理任务。
+CodeMentor 采用**总控-专家**模式的多 Agent 架构，由一个总控（Orchestrator）根据用户意图派遣不同的专家 Agent 处理任务。每个 Agent 采用适合其角色的推理范式，让思维过程透明可见。
 
 ```
                     ┌─────────────┐
@@ -11,18 +11,31 @@ CodeMentor 采用**总控-专家**模式的多 Agent 架构，由一个总控（
                            │ 消息
                            ↓
                     ┌─────────────┐
-                    │  Orchestrator│  ← 总控：意图识别 + 调度
-                    │   (总控)     │
+                    │  Orchestrator│  ← 总控：ReAct 范式
+                    │   (总控)     │    观察→推理→行动→观察
                     └──┬───┬───┬──┘
                        │   │   │
           ┌────────────┘   │   └────────────┐
           ↓                ↓                 ↓
    ┌────────────┐  ┌────────────┐   ┌────────────┐   ┌────────────┐
    │  Lecturer  │  │ Problem    │   │  Examiner  │   │   Path     │
-   │  (讲师)    │  │ Setter     │   │  (考官)    │   │  Planner   │
+   │ (Socratic) │  │ Setter     │   │(Reflection)│   │ Planner    │
+   │  (讲师)    │  │(Plan-Solve)│   │  (考官)    │   │(Plan-Solve)│
    │            │  │ (出题官)   │   │            │   │ (规划师)   │
    └────────────┘  └────────────┘   └────────────┘   └────────────┘
 ```
+
+## 智能体推理范式
+
+每个 Agent 采用最适合其角色的推理范式，系统提示词明确要求 Agent 在 reasoning_content 中展示完整思维链，用户可在对话框中展开查看每个 Agent 的思考过程。
+
+| 智能体 | 范式 | 核心思想 | 思维链展示内容 |
+|---|---|---|---|
+| **Orchestrator（总控）** | **ReAct** | 观察→推理→行动→观察的循环调度 | 分析用户输入→识别意图→选择派遣哪个Agent→为什么 |
+| **Lecturer（讲师）** | **Socratic** | 苏格拉底式提问引导 | 判断学生卡点→选择提示级别→设计引导问题→如何帮助学生自己发现答案 |
+| **Problem Setter（出题官）** | **Plan-and-Solve** | 先规划再执行 | 分析学生需求→规划题目结构→选择测试用例→校验题目质量→调整优化 |
+| **Examiner（考官）** | **Reflection** | 评估→反思→改进的迭代 | 初步评估结果→反思遗漏点→改进建议针对性→最终评分与建议 |
+| **Path Planner（规划师）** | **Plan-and-Solve** | 先制定路线图再输出 | 当前掌握度分析→目标设定→知识点拓扑排序→里程碑划分→最终路径 |
 
 ## Agent 角色定义
 
@@ -97,6 +110,8 @@ CodeMentor 采用**总控-专家**模式的多 Agent 架构，由一个总控（
 
 活动结构：
 ```typescript
+type AgentParadigm = 'ReAct' | 'Plan-and-Solve' | 'Reflection' | 'Socratic';
+
 interface AgentActivity {
   id: string;           // 唯一 ID
   agent: AgentRole;     // 哪个 Agent
@@ -106,8 +121,19 @@ interface AgentActivity {
   status?: 'running' | 'success' | 'warning' | 'error';
   durationMs?: number;  // 耗时（完成后）
   timestamp: number;
+  paradigm?: AgentParadigm;  // 该 Agent 使用的推理范式
 }
 ```
+
+### ThinkingChain 思维链组件
+
+思维链以内联方式展示在对话消息中，用户可点击展开/折叠查看每个 Agent 的完整思考过程：
+
+- **实时流式更新**：thinking 类型活动在 LLM 推理时实时追加内容
+- **按 Agent 分组**：不同 Agent 的思维链用不同颜色标签区分（总控紫色、讲师绿色、出题官黄色、考官红色、规划师橙色）
+- **范式标签**：标签显示 Agent 名称和使用的范式（如"讲师·Socratic"），鼠标悬停显示范式说明
+- **自动折叠**：生成完成后默认折叠，点击可展开查看完整推理过程
+- **预览截断**：折叠时只显示最后 500 字符的推理预览，避免占用过多空间
 
 ## 流式输出流程
 

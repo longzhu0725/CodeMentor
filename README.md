@@ -144,11 +144,21 @@ src/
 7. 完成后将 activities 附加到 assistant 消息，支持历史回顾
 
 ### 透明思维链（ThinkingChain）
-每条 AI 回复下方都带有一个可折叠的「思考过程」块：
-- **生成中**：自动展开，显示旋转图标 + 当前执行步骤（如"验证题目结构与质量"）
+每条 AI 回复下方都带有一个可折叠的「思考过程」块，展示每个 Agent 采用不同推理范式的完整思考过程：
+
+- **生成中**：自动展开，实时流式显示推理内容 + 当前执行步骤
 - **完成后**：折叠为一行摘要 `◇ 思考过程 N步 · Xs`，点击展开查看详细步骤
-- **步骤详情**：每步显示 Agent 标签（彩色）、步骤类型、操作描述、耗时；有 detail 的步骤可再次点击展开
+- **Agent 范式标签**：每个 Agent 的思维链前显示名称和推理范式（总控·ReAct、讲师·Socratic、出题官·Plan-and-Solve、考官·Reflection、规划师·Plan-and-Solve），悬停可查看范式说明
+- **步骤详情**：每步显示 Agent 彩色标签、步骤类型、操作描述、耗时；有 detail 的步骤可再次点击展开
+- **推理预览**：折叠时显示最后 500 字符推理预览，点击展开查看完整思维链
 - **历史消息**：每条回复独立保存自己的思维链，可随时回顾
+
+各 Agent 采用的推理范式：
+- **总控 Orchestrator**：ReAct 范式（观察→推理→行动→观察循环调度）
+- **讲师 Lecturer**：Socratic 范式（苏格拉底式提问引导学生自己发现答案）
+- **出题官 Problem Setter**：Plan-and-Solve 范式（先规划题目结构再生成）
+- **考官 Examiner**：Reflection 范式（评估→反思→改进的迭代优化）
+- **规划师 Path Planner**：Plan-and-Solve 范式（先制定学习路线图再输出）
 
 ### 代码执行引擎（PyodideRunner）
 Web Worker 中运行 Pyodide，两套执行 Harness：

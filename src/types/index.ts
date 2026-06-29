@@ -11,6 +11,13 @@ export type AgentRole =
   | 'examiner'
   | 'path_planner';
 
+/** Agent 推理范式，用于在思维链中展示该 Agent 采用的认知架构 */
+export type AgentParadigm =
+  | 'ReAct'
+  | 'Plan-and-Solve'
+  | 'Reflection'
+  | 'Socratic';
+
 // --- Agent Activity / Transparency Types ---
 
 export type AgentActivityType =
@@ -42,6 +49,8 @@ export interface AgentActivity {
   durationMs?: number;
   /** When this activity started */
   timestamp: number;
+  /** Which reasoning paradigm this agent is using (e.g. ReAct, Reflection) */
+  paradigm?: AgentParadigm;
 }
 
 export interface AgentMessage {
