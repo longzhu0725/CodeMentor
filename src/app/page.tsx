@@ -107,9 +107,19 @@ export default function Home() {
   // Sync problem from chat to practice view (only when a NEW problem arrives)
   useEffect(() => {
     if (chat.currentProblem && chat.currentProblem.id !== problem?.id) {
-      setProblem(chat.currentProblem);
-      setCode(chat.currentProblem.starterCode);
-      setExecutionResult(null);
+      const newProblem = chat.currentProblem;
+      // Save the newly generated problem to history so it can be revisited later
+      const history = getProblemHistory();
+      const existing = history.getById(newProblem.id);
+      history.saveProblem(
+        newProblem,
+        existing?.userCode ?? newProblem.starterCode,
+        existing?.lastResult ?? null,
+        sessionManager.getActiveSession()?.title
+      );
+      setProblem(newProblem);
+      setCode(existing?.userCode ?? newProblem.starterCode);
+      setExecutionResult(existing?.lastResult ?? null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.currentProblem]);
@@ -304,6 +314,24 @@ export default function Home() {
     setView('practice');
   }, [problem]);
 
+  /** Switch to another problem from history, preserving current code first. */
+  const handleProblemChange = useCallback(
+    (nextProblem: AlgorithmProblem) => {
+      // Save current progress before switching
+      if (problem) {
+        const history = getProblemHistory();
+        history.saveProblem(problem, code, executionResult);
+      }
+      // Restore the target problem's saved code/result if available
+      const history = getProblemHistory();
+      const saved = history.getById(nextProblem.id);
+      setProblem(nextProblem);
+      setCode(saved?.userCode ?? nextProblem.starterCode);
+      setExecutionResult(saved?.lastResult ?? null);
+    },
+    [code, executionResult, problem]
+  );
+
   const handleSaveSettings = useCallback((newSettings: AppSettings) => {
     setSettings(newSettings);
     setSettingsOpen(false);
@@ -343,6 +371,7 @@ export default function Home() {
             code={code}
             setCode={setCode}
             executionResult={executionResult}
+            onProblemChange={handleProblemChange}
           />
         )}
 

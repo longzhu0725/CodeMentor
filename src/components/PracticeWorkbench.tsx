@@ -1,9 +1,10 @@
 'use client';
 
 import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { AlgorithmProblem, CodeExecutionResult } from '@/types';
+import { AlgorithmProblem, CodeExecutionResult, SavedProblem } from '@/types';
 import { loadPyodide, runCode, runTestCases } from './PyodideRunner';
 import { PixelAvatar, PixelStars } from './PixelAvatar';
+import { getProblemHistory } from '@/lib/problem-history/manager';
 
 export interface PracticeWorkbenchProps {
   problem: AlgorithmProblem | null;
@@ -12,6 +13,8 @@ export interface PracticeWorkbenchProps {
   code: string;
   setCode: (code: string) => void;
   executionResult: CodeExecutionResult | null;
+  /** Callback when the user selects a different problem from history */
+  onProblemChange?: (problem: AlgorithmProblem) => void;
 }
 
 const DIFFICULTY_LABEL: Record<number, string> = {
@@ -237,6 +240,151 @@ function ResultsPanel({ result }: { result: CodeExecutionResult | null }) {
 }
 
 // ============================================================
+// Problem history panel (sidebar in the practice workbench)
+// ============================================================
+
+const STATUS_META: Record<
+  SavedProblem['status'],
+  { label: string; dot: string; border: string; bg: string }
+> = {
+  solved: {
+    label: '已解决',
+    dot: 'bg-success',
+    border: 'border-success/40',
+    bg: 'bg-success/10',
+  },
+  attempted: {
+    label: '尝试中',
+    dot: 'bg-warning',
+    border: 'border-warning/40',
+    bg: 'bg-warning/10',
+  },
+  unsolved: {
+    label: '未开始',
+    dot: 'bg-muted',
+    border: 'border-border',
+    bg: 'bg-card-hover',
+  },
+};
+
+function formatRelativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return '刚刚';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} 天前`;
+  return new Date(ts).toLocaleDateString('zh-CN');
+}
+
+interface ProblemHistoryPanelProps {
+  history: SavedProblem[];
+  currentProblemId?: string;
+  onSelect: (problem: AlgorithmProblem) => void;
+  collapsed: boolean;
+  onToggle: () => void;
+}
+
+function ProblemHistoryPanel({
+  history,
+  currentProblemId,
+  onSelect,
+  collapsed,
+  onToggle,
+}: ProblemHistoryPanelProps) {
+  return (
+    <div
+      className={`flex h-full flex-col border-r border-border bg-background transition-all duration-200 ${
+        collapsed ? 'w-12' : 'w-64'
+      }`}
+    >
+      {/* Header with toggle button */}
+      <div className="flex items-center justify-between border-b border-border px-3 py-3">
+        {!collapsed && (
+          <span className="pixel-font text-xs font-bold text-foreground">
+            题目目录
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex h-6 w-6 items-center justify-center rounded border border-border bg-card text-muted hover:bg-card-hover"
+          title={collapsed ? '展开题目目录' : '收起题目目录'}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`transition-transform ${collapsed ? '' : 'rotate-180'}`}
+            style={{ transformOrigin: 'center' }}
+          >
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Problem list */}
+      {!collapsed && (
+        <div className="flex-1 overflow-y-auto p-2">
+          {history.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-3 text-center text-xs text-muted">
+              暂无历史题目
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {history.map((saved) => {
+                const meta = STATUS_META[saved.status];
+                const isActive = saved.id === currentProblemId;
+                return (
+                  <button
+                    key={saved.id}
+                    type="button"
+                    onClick={() => onSelect(saved.problem)}
+                    className={`w-full rounded-lg border p-2.5 text-left transition-colors ${
+                      isActive
+                        ? 'border-accent bg-accent/10'
+                        : `${meta.border} ${meta.bg} hover:brightness-110`
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span
+                        className={`mt-1.5 h-2 w-2 shrink-0 rounded-sm ${meta.dot}`}
+                        style={{ borderRadius: 0 }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-semibold text-foreground">
+                          {saved.problem.title}
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted">
+                          <span>{DIFFICULTY_LABEL[saved.problem.difficulty]}</span>
+                          <span>·</span>
+                          <span>{meta.label}</span>
+                        </div>
+                        <div className="mt-1 text-[10px] text-muted/70">
+                          {formatRelativeTime(saved.savedAt)}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // PracticeWorkbench
 // ============================================================
 
@@ -247,6 +395,7 @@ export function PracticeWorkbench({
   code,
   setCode,
   executionResult,
+  onProblemChange,
 }: PracticeWorkbenchProps) {
   const [localResult, setLocalResult] = useState<CodeExecutionResult | null>(
     null
@@ -255,6 +404,14 @@ export function PracticeWorkbench({
   const [pyodideLoading, setPyodideLoading] = useState(false);
   const [showHints, setShowHints] = useState(false);
   const [activeTab, setActiveTab] = useState<'results' | 'hints'>('results');
+  const [showHistory, setShowHistory] = useState(true);
+  const [historyList, setHistoryList] = useState<SavedProblem[]>([]);
+
+  // Refresh history list whenever the current problem changes or code is submitted
+  useEffect(() => {
+    const history = getProblemHistory();
+    setHistoryList(history.getAll());
+  }, [problem?.id]);
 
   // Initialize code from the problem's starter code when the problem changes.
   useEffect(() => {
@@ -362,226 +519,241 @@ export function PracticeWorkbench({
   }
 
   return (
-    <div className="grid h-full grid-cols-1 lg:grid-cols-2">
-      {/* Left: problem description */}
-      <div className="flex h-full flex-col overflow-hidden border-r border-border">
-        <div className="border-b border-border px-5 py-4">
-          <div className="flex items-center gap-2">
-            <div className="pixel-avatar-box h-7 w-7 shrink-0">
-              <PixelAvatar role="problem_setter" size={22} />
-            </div>
-            <h2 className="text-lg font-bold text-foreground">
-              {problem.title}
-            </h2>
-            <span
-              className={`ml-1 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
-                DIFFICULTY_COLOR[problem.difficulty] ??
-                'border-border bg-card text-muted'
-              }`}
-            >
-              {DIFFICULTY_LABEL[problem.difficulty] ?? `${problem.difficulty} 星`}
-            </span>
-            <PixelStars count={problem.difficulty} size={11} />
-          </div>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {problem.tags.map((tag) => (
-              <span
-                key={tag}
-                className="rounded-md bg-card-hover px-1.5 py-0.5 text-[11px] text-muted"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-        </div>
+    <div className="flex h-full">
+      {/* Left sidebar: problem history directory */}
+      <ProblemHistoryPanel
+        history={historyList}
+        currentProblemId={problem?.id}
+        onSelect={(p) => {
+          onProblemChange?.(p);
+          setShowHistory(false);
+        }}
+        collapsed={!showHistory}
+        onToggle={() => setShowHistory((s) => !s)}
+      />
 
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-          <div className="md-content">
-            <p className="md-p whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-              {problem.description}
-            </p>
-
-            {problem.examples.length > 0 && (
-              <>
-                <h3 className="md-h3">示例</h3>
-                {problem.examples.map((ex, idx) => (
-                  <div
-                    key={idx}
-                    className="mb-3 rounded-xl border border-border bg-background p-3"
-                  >
-                    <div className="mb-1.5 text-xs font-medium text-muted">
-                      示例 {idx + 1}
-                    </div>
-                    <div className="space-y-1 font-mono text-xs">
-                      <div>
-                        <span className="text-success">输入：</span>
-                        <span className="text-foreground">{ex.input}</span>
-                      </div>
-                      <div>
-                        <span className="text-warning">输出：</span>
-                        <span className="text-foreground">{ex.output}</span>
-                      </div>
-                      {ex.explanation && (
-                        <div className="pt-1 text-muted">
-                          <span className="text-accent">解释：</span>
-                          {ex.explanation}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </>
-            )}
-
-            {problem.constraints && problem.constraints.length > 0 && (
-              <>
-                <h3 className="md-h3">约束条件</h3>
-                <ul className="md-ul">
-                  {problem.constraints.map((c, idx) => (
-                    <li key={idx} className="md-li text-sm">
-                      <code className="md-code">{c}</code>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-
-            {problem.timeComplexity && (
-              <div className="mt-4 flex gap-4 text-xs">
-                <div className="rounded-lg bg-card-hover px-3 py-1.5">
-                  <span className="text-muted">时间复杂度：</span>
-                  <span className="font-mono text-foreground">
-                    {problem.timeComplexity}
-                  </span>
-                </div>
-                <div className="rounded-lg bg-card-hover px-3 py-1.5">
-                  <span className="text-muted">空间复杂度：</span>
-                  <span className="font-mono text-foreground">
-                    {problem.spaceComplexity}
-                  </span>
-                </div>
+      {/* Main content: problem + editor */}
+      <div className="grid h-full flex-1 grid-cols-1 lg:grid-cols-2">
+        {/* Left: problem description */}
+        <div className="flex h-full flex-col overflow-hidden border-r border-border">
+          <div className="border-b border-border px-5 py-4">
+            <div className="flex items-center gap-2">
+              <div className="pixel-avatar-box h-7 w-7 shrink-0">
+                <PixelAvatar role="problem_setter" size={22} />
               </div>
-            )}
+              <h2 className="text-lg font-bold text-foreground">
+                {problem.title}
+              </h2>
+              <span
+                className={`ml-1 rounded-md border px-2 py-0.5 text-[11px] font-medium ${
+                  DIFFICULTY_COLOR[problem.difficulty] ??
+                  'border-border bg-card text-muted'
+                }`}
+              >
+                {DIFFICULTY_LABEL[problem.difficulty] ?? `${problem.difficulty} 星`}
+              </span>
+              <PixelStars count={problem.difficulty} size={11} />
+            </div>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {problem.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-md bg-card-hover px-1.5 py-0.5 text-[11px] text-muted"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
           </div>
-        </div>
-      </div>
 
-      {/* Right: editor + actions + results */}
-      <div className="flex h-full flex-col overflow-hidden">
-        {/* Editor header */}
-        <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
-          <div className="flex items-center gap-2 text-xs text-muted">
-            <span className="h-2.5 w-2.5 bg-danger/70" style={{ borderRadius: 0 }} />
-            <span className="h-2.5 w-2.5 bg-warning/70" style={{ borderRadius: 0 }} />
-            <span className="h-2.5 w-2.5 bg-success/70" style={{ borderRadius: 0 }} />
-            <span className="ml-2 font-mono">solution.py</span>
-          </div>
-          <span className="font-mono text-[11px] text-muted">
-            函数：{functionName}()
-          </span>
-        </div>
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            <div className="md-content">
+              <p className="md-p whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+                {problem.description}
+              </p>
 
-        {/* Editor */}
-        <div className="h-[40%] min-h-[180px] shrink-0 p-2">
-          <CodeEditor value={code} onChange={setCode} />
-        </div>
-
-        {/* Action bar */}
-        <div className="flex items-center gap-2 border-t border-border px-3 py-2.5">
-          <button
-            type="button"
-            onClick={handleRun}
-            disabled={isRunning || !code.trim()}
-            className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isRunning ? (
-              <svg className="animate-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-              </svg>
-            ) : (
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
-            )}
-            运行
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={isRunning || !code.trim()}
-            className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow-md shadow-accent/20 transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            提交评测
-          </button>
-          {pyodideLoading && (
-            <span className="ml-1 text-xs text-muted">
-              正在加载 Python 运行环境…
-            </span>
-          )}
-          <div className="ml-auto flex rounded-lg border border-border">
-            <button
-              type="button"
-              onClick={() => setActiveTab('results')}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                activeTab === 'results'
-                  ? 'bg-card-hover text-foreground'
-                  : 'text-muted hover:text-foreground'
-              }`}
-            >
-              测试结果
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('hints');
-                setShowHints(true);
-              }}
-              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                activeTab === 'hints'
-                  ? 'bg-card-hover text-foreground'
-                  : 'text-muted hover:text-foreground'
-              }`}
-            >
-              提示
-            </button>
-          </div>
-        </div>
-
-        {/* Results / hints */}
-        <div className="min-h-0 flex-1 overflow-y-auto border-t border-border bg-background">
-          {activeTab === 'results' ? (
-            <ResultsPanel result={displayedResult} />
-          ) : (
-            <div className="space-y-3 p-4">
-              {showHints && problem.hints.length > 0 ? (
-                problem.hints.map((hint, idx) => (
-                  <div
-                    key={idx}
-                    className="rounded-xl border border-accent/30 bg-accent/5 p-3"
-                  >
-                    <div className="mb-1 flex items-center gap-2">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/20 text-[11px] font-bold text-accent">
-                        {idx + 1}
-                      </span>
-                      <span className="text-xs font-medium text-accent">
-                        提示 {idx + 1}
-                      </span>
+              {problem.examples.length > 0 && (
+                <>
+                  <h3 className="md-h3">示例</h3>
+                  {problem.examples.map((ex, idx) => (
+                    <div
+                      key={idx}
+                      className="mb-3 rounded-xl border border-border bg-background p-3"
+                    >
+                      <div className="mb-1.5 text-xs font-medium text-muted">
+                        示例 {idx + 1}
+                      </div>
+                      <div className="space-y-1 font-mono text-xs">
+                        <div>
+                          <span className="text-success">输入：</span>
+                          <span className="text-foreground">{ex.input}</span>
+                        </div>
+                        <div>
+                          <span className="text-warning">输出：</span>
+                          <span className="text-foreground">{ex.output}</span>
+                        </div>
+                        {ex.explanation && (
+                          <div className="pt-1 text-muted">
+                            <span className="text-accent">解释：</span>
+                            {ex.explanation}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <p className="text-sm text-foreground/90">{hint}</p>
-                  </div>
-                ))
-              ) : (
-                <p className="text-sm text-muted">暂无提示。</p>
+                  ))}
+                </>
               )}
+
+              {problem.constraints && problem.constraints.length > 0 && (
+                <>
+                  <h3 className="md-h3">约束条件</h3>
+                  <ul className="md-ul">
+                    {problem.constraints.map((c, idx) => (
+                      <li key={idx} className="md-li text-sm">
+                        <code className="md-code">{c}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+
+              {problem.timeComplexity && (
+                <div className="mt-4 flex gap-4 text-xs">
+                  <div className="rounded-lg bg-card-hover px-3 py-1.5">
+                    <span className="text-muted">时间复杂度：</span>
+                    <span className="font-mono text-foreground">
+                      {problem.timeComplexity}
+                    </span>
+                  </div>
+                  <div className="rounded-lg bg-card-hover px-3 py-1.5">
+                    <span className="text-muted">空间复杂度：</span>
+                    <span className="font-mono text-foreground">
+                      {problem.spaceComplexity}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right: editor + actions + results */}
+        <div className="flex h-full flex-col overflow-hidden">
+          {/* Editor header */}
+          <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <span className="h-2.5 w-2.5 bg-danger/70" style={{ borderRadius: 0 }} />
+              <span className="h-2.5 w-2.5 bg-warning/70" style={{ borderRadius: 0 }} />
+              <span className="h-2.5 w-2.5 bg-success/70" style={{ borderRadius: 0 }} />
+              <span className="ml-2 font-mono">solution.py</span>
+            </div>
+            <span className="font-mono text-[11px] text-muted">
+              函数：{functionName}()
+            </span>
+          </div>
+
+          {/* Editor */}
+          <div className="h-[40%] min-h-[180px] shrink-0 p-2">
+            <CodeEditor value={code} onChange={setCode} />
+          </div>
+
+          {/* Action bar */}
+          <div className="flex items-center gap-2 border-t border-border px-3 py-2.5">
+            <button
+              type="button"
+              onClick={handleRun}
+              disabled={isRunning || !code.trim()}
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-card-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isRunning ? (
+                <svg className="animate-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+              )}
+              运行
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={isRunning || !code.trim()}
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground shadow-md shadow-accent/20 transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              提交评测
+            </button>
+            {pyodideLoading && (
+              <span className="ml-1 text-xs text-muted">
+                正在加载 Python 运行环境…
+              </span>
+            )}
+            <div className="ml-auto flex rounded-lg border border-border">
               <button
                 type="button"
                 onClick={() => setActiveTab('results')}
-                className="text-xs text-accent hover:underline"
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === 'results'
+                    ? 'bg-card-hover text-foreground'
+                    : 'text-muted hover:text-foreground'
+                }`}
               >
-                ← 返回测试结果
+                测试结果
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('hints');
+                  setShowHints(true);
+                }}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === 'hints'
+                    ? 'bg-card-hover text-foreground'
+                    : 'text-muted hover:text-foreground'
+                }`}
+              >
+                提示
               </button>
             </div>
-          )}
+          </div>
+
+          {/* Results / hints */}
+          <div className="min-h-0 flex-1 overflow-y-auto border-t border-border bg-background">
+            {activeTab === 'results' ? (
+              <ResultsPanel result={displayedResult} />
+            ) : (
+              <div className="space-y-3 p-4">
+                {showHints && problem.hints.length > 0 ? (
+                  problem.hints.map((hint, idx) => (
+                    <div
+                      key={idx}
+                      className="rounded-xl border border-accent/30 bg-accent/5 p-3"
+                    >
+                      <div className="mb-1 flex items-center gap-2">
+                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/20 text-[11px] font-bold text-accent">
+                          {idx + 1}
+                        </span>
+                        <span className="text-xs font-medium text-accent">
+                          提示 {idx + 1}
+                        </span>
+                      </div>
+                      <p className="text-sm text-foreground/90">{hint}</p>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted">暂无提示。</p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('results')}
+                  className="text-xs text-accent hover:underline"
+                >
+                  ← 返回测试结果
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
