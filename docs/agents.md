@@ -2,7 +2,7 @@
 
 ## 多智能体架构
 
-CodeMentor 采用**总控-专家**模式的多 Agent 架构，由一个总控（Orchestrator）根据用户意图派遣不同的专家 Agent 处理任务。每个 Agent 采用适合其角色的推理范式，让思维过程透明可见。
+CodeMentor 采用 **Hierarchical Delegation（层级委派）** 模式的多 Agent 架构。由一个总控（Orchestrator）根据用户意图派遣不同的专家 Agent 处理任务，总控在执行过程中持续参与，可基于中间结果动态调整计划。每个 Agent 采用适合其角色的推理范式，让思维过程透明可见。
 
 ```
                     ┌─────────────┐
@@ -11,73 +11,90 @@ CodeMentor 采用**总控-专家**模式的多 Agent 架构，由一个总控（
                            │ 消息
                            ↓
                     ┌─────────────┐
-                    │  Orchestrator│  ← 总控：ReAct 范式
-                    │   (总控)     │    观察→推理→行动→观察
+                    │  Orchestrator│  ← 总控：Plan-and-Execute 范式
+                    │   (总控)     │    规划→执行→再规划→综合
                     └──┬───┬───┬──┘
-                       │   │   │
+                       │   │   │     ↑ 每步完成后评估是否调整计划
           ┌────────────┘   │   └────────────┐
           ↓                ↓                 ↓
    ┌────────────┐  ┌────────────┐   ┌────────────┐   ┌────────────┐
    │  Lecturer  │  │ Problem    │   │  Examiner  │   │   Path     │
-   │ (Socratic) │  │ Setter     │   │(Reflection)│   │ Planner    │
-   │  (讲师)    │  │(Plan-Solve)│   │  (考官)    │   │(Plan-Solve)│
+   │ (ReAct+CoT)│  │ Setter     │   │(Reflexion) │   │ Planner    │
+   │  (讲师)    │  │(Plan+Refl) │   │  (考官)    │   │(Plan-Exec) │
    │            │  │ (出题官)   │   │            │   │ (规划师)   │
    └────────────┘  └────────────┘   └────────────┘   └────────────┘
 ```
 
 ## 智能体推理范式
 
-每个 Agent 采用最适合其角色的推理范式，系统提示词明确要求 Agent 在 reasoning_content 中展示完整思维链，用户可在对话框中展开查看每个 Agent 的思考过程。
+每个 Agent 采用最适合其角色的推理范式，system prompt 中描述的范式与代码中实际执行的逻辑完全一致。用户可在对话框中展开查看每个 Agent 的思考过程。
 
 | 智能体 | 范式 | 核心思想 | 思维链展示内容 |
 |---|---|---|---|
-| **Orchestrator（总控）** | **ReAct** | 观察→推理→行动→观察的循环调度 | 分析用户输入→识别意图→选择派遣哪个Agent→为什么 |
-| **Lecturer（讲师）** | **Socratic** | 苏格拉底式提问引导 | 判断学生卡点→选择提示级别→设计引导问题→如何帮助学生自己发现答案 |
-| **Problem Setter（出题官）** | **Plan-and-Solve** | 先规划再执行 | 分析学生需求→规划题目结构→选择测试用例→校验题目质量→调整优化 |
-| **Examiner（考官）** | **Reflection** | 评估→反思→改进的迭代 | 初步评估结果→反思遗漏点→改进建议针对性→最终评分与建议 |
-| **Path Planner（规划师）** | **Plan-and-Solve** | 先制定路线图再输出 | 当前掌握度分析→目标设定→知识点拓扑排序→里程碑划分→最终路径 |
+| **Orchestrator（总控）** | **Plan-and-Execute** | 规划→执行→再规划→综合的层级委派 | 分析意图→生成计划→每步完成后评估→必要时调整剩余计划→综合结果 |
+| **Lecturer（讲师）** | **ReAct+CoT** | 工具调用循环+结构化教学推理 | 判断是否需要查知识库→调用工具获取信息→CoT组织教学→苏格拉底式提问输出 |
+| **Problem Setter（出题官）** | **Plan-and-Execute+Reflexion** | 规划出题→生成→验证→反思修复 | 分析需求→查参考题目→规划题目结构→生成→验证→失败时反思修复 |
+| **Examiner（考官）** | **Reflexion** | 评估→反思→改进的迭代优化 | 初步评估→反思遗漏点→改进建议针对性→最终评分与建议 |
+| **Path Planner（规划师）** | **Plan-and-Execute** | 评估现状→确定目标→拓扑排序→输出 | 查知识体系→评估掌握度→拓扑排序→里程碑划分→输出路径 |
+
+### 范式选型依据
+
+| 范式 | 为什么适合这个角色 |
+|---|---|
+| **Plan-and-Execute（总控）** | 总控的核心是宏观编排：先规划全局，执行中根据结果动态调整。比 ReAct 更适合，因为总控的任务是编排而非逐步反应 |
+| **ReAct+CoT（讲师）** | 讲师需要用 ReAct 调工具获取准确信息，再用 CoT 组织结构化教学推理。苏格拉底法是教学方法论层，ReAct+CoT 是执行引擎层 |
+| **Plan-and-Execute+Reflexion（出题官）** | 出题需要先规划结构再生成（Plan-and-Execute），验证失败后反思并修复（Reflexion）。validateAndRepairProblem 已实现 Reflexion 雏形 |
+| **Reflexion（考官）** | 考官的核心就是评估→反思→改进的迭代循环。先初步评估，再反思遗漏，最后改进输出 |
+| **Plan-and-Execute（规划师）** | 规划师就是评估现状→确定目标→拓扑排序→里程碑划分→输出路径，纯粹的规划-执行流程 |
 
 ## Agent 角色定义
 
 ### Orchestrator（总控）
-- **职责**：意图识别、任务调度、状态整合
+- **职责**：意图识别、任务调度、执行间再规划、结果综合
+- **范式**：Plan-and-Execute（层级委派）
 - **触发**：所有用户消息首先经过总控
 - **活动类型**：`agent_start/end`、`thinking`
-- **决策逻辑**：
-  1. 解析斜杠命令（`/practice`、`/plan`、`/hint`）
-  2. 自然语言关键词匹配
-  3. 代码提交上下文识别
-  4. 派遣对应专家 Agent
+- **三阶段流程**：
+  1. **Phase 1 — 规划（Plan）**：`decomposeWithLLM` 分析意图，生成执行计划
+  2. **Phase 2 — 执行与再规划（Execute & Re-plan）**：逐步执行，每步完成后调用 `orchestratorRePlan` 评估是否需要调整剩余计划
+  3. **Phase 3 — 综合（Synthesize）**：收集所有结果，综合输出
+- **再规划机制**：`orchestratorRePlan()` 在每步完成后调用 LLM 评估：
+  - 结果符合预期 → 继续原计划
+  - 需要调整 → 替换剩余步骤（如讲解方向变了，出题任务描述需要更新）
+  - 评估失败 → 保持原计划（优雅降级）
 
 ### Lecturer（讲师）
 - **职责**：知识点讲解、苏格拉底式引导、答疑
+- **范式**：ReAct+CoT（工具调用循环 + 结构化教学推理）
 - **触发模式**：`chat`、`review`（hint 请求）
 - **加载技能**：苏格拉底教学法（socratic-teaching）
-- **使用工具**：`find_topic`（知识库查询）
-- **教学方法**：五级渐进式提示
+- **ReAct 层**：通过 `SearchKnowledge`、`WebSearch` 工具获取准确信息
+- **CoT 层**：获得信息后用思维链组织教学（诊断→设计→呈现）
+- **教学方法论**：苏格拉底式五级渐进式提示
   1. 方向性提示 → 2. 关键思路 → 3. 关键步骤 → 4. 伪代码 → 5. 完整解答
 
 ### Problem Setter（出题官）
-- **职责**：生成练习题、题目质量校验
+- **职责**：生成练习题、题目质量校验、验证失败时反思修复
+- **范式**：Plan-and-Execute+Reflexion
 - **触发模式**：`practice`
 - **加载技能**：problem-generation（出题方法论）
-- **使用工具**：`list_problems`、`find_topic`
+- **可用工具**：`SearchKnowledge`、`SearchProblems`、`WebSearch`、`ValidateProblem`
 - **工作流程**：
-  1. 读取知识点详情（difficulty、keyPoints、commonMistakes）
-  2. 根据学习者掌握度调整难度
-  3. 生成题目（含 starterCode、testCases、hints、solution）
-  4. **自动校验题目质量**（validateProblemStructure）
-  5. 校验不通过则降级到本地题库
+  1. **Plan**：查参考题目 → 规划题目结构
+  2. **Execute**：生成完整题目 JSON
+  3. **Reflexion**：`ValidateProblem` 验证 → 失败时反思 → `validateAndRepairProblem` 自动修复 → 再验证
+  4. 安全网：代码层 `quickValidate` 最终检查，失败降级到本地题库
 
 ### Examiner（考官）
 - **职责**：代码评估、错误分析、改进建议
+- **范式**：Reflexion（评估→反思→改进的迭代优化）
 - **触发模式**：`review`（代码提交后）
 - **加载技能**：code-review（代码评审方法论）
-- **使用工具**：`analyze_code`（静态分析）
-- **评估维度**：
-  - 正确性（测试用例结果）
-  - 时间/空间复杂度
-  - 代码可读性
+- **可用工具**：`AnalyzeCode`、`SearchKnowledge`
+- **Reflexion 三轮循环**：
+  1. **第一轮（初步评估）**：`AnalyzeCode` 分析 → 四维度打分
+  2. **第二轮（反思）**：反思遗漏的边界情况、复杂度准确性、建议可操作性
+  3. **第三轮（改进输出）**：基于反思更新评估，给出具体改进方案
   - 边界情况覆盖
   - 改进建议
 
@@ -286,13 +303,13 @@ practice 模式下，LLM 可能在 ReAct 循环中已经调用了 `ValidateProbl
 - **API 调用失败**：`callLLMStep` 回退到 `callLLMStreaming` 流式调用
 - **达到最大轮次**：强制要求 LLM 给出最终回答
 
-## 多智能体顺序编排
+## 多智能体层级委派编排
 
-当用户请求包含多个意图时（如"先讲解数组，再出一道题"），由总控 Agent 通过 LLM 推理完成意图分解，再启动多步编排流程。
+当用户请求包含多个意图时（如"先讲解数组，再出一道题"），由总控 Agent 通过 Plan-and-Execute 范式完成意图分解、逐步执行、执行间再规划。
 
-### 总控 Agent 外交：LLM 意图分解（decomposeWithLLM）
+### Phase 1：规划（decomposeWithLLM）
 
-多意图识别**不由前端 UI 做关键字匹配**，而是由总控 Agent 调用一次非流式 LLM 完成。这符合"外交（Diplomacy）"设计：总控作为唯一调度中枢，理解复杂请求、判断歧义、生成执行计划。
+多意图识别**不由前端 UI 做关键字匹配**，而是由总控 Agent 调用一次非流式 LLM 完成。
 
 `decomposeWithLLM()` 的输入与输出：
 
@@ -304,21 +321,13 @@ practice 模式下，LLM 可能在 ReAct 循环中已经调用了 `ValidateProbl
   - `intents`：识别出的所有意图及置信度
   - `plan`：`AgentStep[]` 执行计划序列
 
-### 设计原则
-
-1. **总控负责理解**：关键字匹配只能覆盖固定模式，而 LLM 能理解同义、隐含、多意图请求
-2. **歧义时主动澄清**：对于"发给他"这类模糊输入，总控不猜测，直接追问
-3. **失败回退**：若 LLM 分解失败，系统回退到单步规则路由（`inferMode`）
-4. **计划即契约**：每个 `AgentStep` 明确指定 `agent`、`mode`、`task`、`usePrevContext`
-
-### 顺序编排流程（streamBrowserLLMMultiStep）
+### Phase 2：执行与再规划（streamBrowserLLMMultiStep）
 
 ```
 用户输入: "先给我讲解一下数组，再出一道相关的题"
   │
-  ├─ decomposeWithLLM() → OrchestratorPlan
+  ├─ decomposeWithLLM() → OrchestratorPlan (Phase 1: 规划)
   │    ├─ analysis: "用户有两个意图：了解数组概念 + 获得数组练习题"
-  │    ├─ requiresClarification: false
   │    └─ plan: [
   │         {agent: 'lecturer', mode: 'chat', task: '讲解数组...', usePrevContext: false},
   │         {agent: 'problem_setter', mode: 'practice', task: '基于数组出题...', usePrevContext: true}
@@ -326,30 +335,47 @@ practice 模式下，LLM 可能在 ReAct 循环中已经调用了 `ValidateProbl
   │
   ├─ 总控: emit onActivity('多步任务计划: 1.讲师(chat) → 2.出题官(practice)')
   │
-  ├─ Step 1: 讲师 Agent
+  ├─ Step 1: 讲师 Agent (ReAct+CoT)
   │    ├─ emit agent_start('讲师 · 第1步/2')
   │    ├─ emit skill_load('苏格拉底教学法')
-  │    ├─ emit knowledge_read('数组知识点')
-  │    ├─ emit thinking('讲师 · Socratic 推理中…')
-  │    ├─ LLM 流式调用 → onToken 逐字推送
+  │    ├─ runReActLoop:
+  │    │    ├─ Thought: 需要查知识库 → Action: SearchKnowledge[数组]
+  │    │    ├─ Observation: 数组是一种线性数据结构...
+  │    │    └─ Thought: 信息充分 → Action: Finish[讲解内容]
   │    ├─ emit agent_end('讲师完成第1步')
   │    └─ 输出存为 prevOutput
   │
-  ├─ 总控: emit onActivity('第1步完成，传递上下文给第2步')
+  ├─ 总控: orchestratorRePlan() (Phase 2: 再规划)
+  │    ├─ 评估: "讲解内容覆盖了数组定义和基本操作，出题应聚焦数组遍历"
+  │    ├─ shouldReplan: false（保持原计划，但确认了方向）
+  │    └─ emit onActivity('总控评估通过，继续执行原计划')
   │
-  ├─ Step 2: 出题官 Agent
+  ├─ Step 2: 出题官 Agent (Plan-and-Execute+Reflexion)
   │    ├─ emit agent_start('出题官 · 第2步/2')
-  │    ├─ emit skill_load('出题方法论')
-  │    ├─ 构建 prompt: task + prevOutput（上游讲解作为参考上下文）
-  │    ├─ emit thinking('出题官 · Plan-and-Solve 推理中…')
-  │    ├─ LLM 流式调用 → onToken 逐字推送
-  │    ├─ emit validate('验证题目结构')
-  │    └─ emit agent_end('出题官完成第2步')
+  │    ├─ runReActLoop:
+  │    │    ├─ Thought: 先查参考题目 → Action: SearchProblems[数组]
+  │    │    ├─ Observation: 题库有5道数组题...
+  │    │    ├─ Thought: 生成题目 → Action: Finish[题目JSON]
+  │    │    └─ （安全网）quickValidate → validateAndRepairProblem
+  │    ├─ emit agent_end('出题官完成第2步')
   │
-  ├─ 总控: emit onActivity('多步任务全部完成')
+  ├─ 总控: emit onActivity('多步任务全部完成') (Phase 3: 综合)
   │
   └─ 合并所有步骤输出 → 返回 ChatResponse
 ```
+
+### 再规划机制（orchestratorRePlan）
+
+每步完成后，总控调用 `orchestratorRePlan()` 评估是否需要调整剩余计划：
+
+| 场景 | shouldReplan | 行为 |
+|---|---|---|
+| 结果符合预期 | false | 继续执行原计划 |
+| 讲解方向偏了，出题需要调整 | true | 替换剩余步骤的任务描述 |
+| 需要增加或删除步骤 | true | 修改剩余步骤列表 |
+| 评估请求失败 | false | 优雅降级，保持原计划 |
+
+再规划时总控 LLM 收到：已完成步骤的结果摘要 + 剩余计划。返回 JSON 指示是否调整。
 
 ### 上下文传递机制
 

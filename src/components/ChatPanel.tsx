@@ -27,11 +27,11 @@ const AGENT_META: Record<
   AgentRole,
   { name: string; role: MascotRole; color: string; paradigm: AgentParadigm; paradigmDesc: string }
 > = {
-  orchestrator: { name: '总控', role: 'orchestrator', color: '#818cf8', paradigm: 'ReAct', paradigmDesc: '观察→推理→行动→观察的循环调度' },
-  lecturer: { name: '讲师', role: 'lecturer', color: '#34d399', paradigm: 'Socratic', paradigmDesc: '苏格拉底式提问，引导学生自己发现答案' },
-  problem_setter: { name: '出题官', role: 'problem_setter', color: '#fbbf24', paradigm: 'Plan-and-Solve', paradigmDesc: '先规划题目结构，再生成完整题目' },
-  examiner: { name: '考官', role: 'examiner', color: '#f87171', paradigm: 'Reflection', paradigmDesc: '评估→反思→改进的迭代优化' },
-  path_planner: { name: '规划师', role: 'path_planner', color: '#fb923c', paradigm: 'Plan-and-Solve', paradigmDesc: '先制定学习路线图，再输出详细路径' },
+  orchestrator: { name: '总控', role: 'orchestrator', color: '#818cf8', paradigm: 'Plan-and-Execute', paradigmDesc: '规划→执行→再规划的层级委派' },
+  lecturer: { name: '讲师', role: 'lecturer', color: '#34d399', paradigm: 'ReAct+CoT', paradigmDesc: '工具调用循环+结构化教学推理' },
+  problem_setter: { name: '出题官', role: 'problem_setter', color: '#fbbf24', paradigm: 'Plan-and-Execute+Reflexion', paradigmDesc: '规划出题→生成→验证→反思修复' },
+  examiner: { name: '考官', role: 'examiner', color: '#f87171', paradigm: 'Reflexion', paradigmDesc: '评估→反思→改进的迭代优化' },
+  path_planner: { name: '规划师', role: 'path_planner', color: '#fb923c', paradigm: 'Plan-and-Execute', paradigmDesc: '评估现状→确定目标→拓扑排序→输出路径' },
 };
 
 const QUICK_ACTIONS: { cmd: string; label: string; desc: string }[] = [

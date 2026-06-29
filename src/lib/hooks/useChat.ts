@@ -277,7 +277,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             label: '总控分析用户意图…',
             status: 'running',
             timestamp: Date.now(),
-            paradigm: 'ReAct',
+            paradigm: 'Plan-and-Execute',
           };
           turnActivities.push(orchAnalyzeAct);
           setLiveActivities([...turnActivities]);

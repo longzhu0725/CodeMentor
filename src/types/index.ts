@@ -14,9 +14,10 @@ export type AgentRole =
 /** Agent 推理范式，用于在思维链中展示该 Agent 采用的认知架构 */
 export type AgentParadigm =
   | 'ReAct'
-  | 'Plan-and-Solve'
-  | 'Reflection'
-  | 'Socratic';
+  | 'Plan-and-Execute'
+  | 'Reflexion'
+  | 'ReAct+CoT'
+  | 'Plan-and-Execute+Reflexion';
 
 // --- Agent Activity / Transparency Types ---
 
