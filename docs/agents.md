@@ -201,7 +201,38 @@ streamBrowserLLM() 开始
 | `search_problems` | 题目搜索 | 按知识点/难度搜索题库 | 自动检测 + `/problems` 命令 |
 | `analyze_code` | 代码分析 | 静态分析 Python 代码复杂度 | review 模式自动调用 |
 | `learning_path` | 学习路径 | 生成结构化学习路径 | plan 模式自动调用 |
-| `validate_problem` | 题目验证 | 验证 AI 生成题目的结构质量 | practice 模式自动调用 |
+| `validate_problem` | 题目验证 | 验证 AI 生成题目的结构质量 | practice 模式生成题目后自动调用 |
+
+### 题目验证与自动修复
+
+当 AI 生成练习题后，系统会自动调用 `validate_problem` 工具进行结构验证，并在思维链中显示为 `tool_call` 活动：
+
+```
+[problem_setter · Plan-and-Solve]
+  ├─ 加载技能：出题方法论
+  ├─ 读取知识库（2 个相关知识点）
+  ├─ 调用工具：validate_problem（题目结构验证）  ← 新
+  │     结果：❌ 结构验证失败
+  │     错误：测试用例数量不足
+  ├─ 题目自动修复中…                          ← 新
+  ├─ 调用工具：validate_problem（题目结构验证 · 修复后）  ← 新
+  │     结果：✅ 结构验证通过
+  └─ agent_end
+```
+
+验证与修复流程（`validateAndRepairProblem`）：
+1. LLM 生成题目后，立即调用 `validate_problem` 工具
+2. 如果验证失败，自动启动一次修复：
+   - 创建 `thinking` 活动"题目自动修复中…"
+   - 将验证问题和原题目 JSON 作为 prompt 再次调用 LLM
+   - LLM 返回修复后的 JSON
+3. 再次调用 `validate_problem` 验证修复结果
+4. 如果仍然失败，降级到本地题库
+
+这个流程确保：
+- 每道生成的题目都在思维链中展示验证步骤
+- 验证失败时不是简单丢弃，而是先尝试自动修复
+- 用户能看到完整的工具调用、修复、再验证过程
 
 ## 多智能体顺序编排
 

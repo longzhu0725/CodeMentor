@@ -20,7 +20,7 @@ import { SUB_AGENTS } from '@/lib/agents/definitions';
 import { skillRegistry } from '@/lib/skills/registry';
 import { KNOWLEDGE_TOPICS } from '@/lib/knowledge/topics';
 import { getRandomProblem } from '@/lib/knowledge/problems';
-import { quickValidate, validateProblemStructure } from '@/lib/problem-validator';
+import { quickValidate } from '@/lib/problem-validator';
 import { toolRegistry } from '@/lib/tools/registry';
 
 interface ChatContext {
@@ -422,40 +422,33 @@ export async function streamBrowserLLM(
     if (rawProblem) {
       const normalized = normalizeProblem(rawProblem);
 
-      // Step 7: Validate problem using validate_problem tool
-      const valAct = newActivity(agentRole, 'validate', '验证题目结构与质量');
-      emit(valAct);
+      // Step 7: Validate problem using validate_problem tool, with auto-repair
+      const { problem: validated, validationText } = await validateAndRepairProblem(
+          normalized,
+          agentRole,
+          baseURL,
+          model,
+          settings.apiKey,
+          emit,
+          finish,
+          apiMessages,
+          fullSystem,
+          1 // one repair attempt
+        );
 
-      const issues = validateProblemStructure(normalized);
-      const errors = issues.filter((i) => i.severity === 'error');
-      const warnings = issues.filter((i) => i.severity === 'warning');
-      const quickOk = quickValidate(normalized);
-
-      const valDetail = [
-        quickOk ? '结构验证通过' : '结构验证失败',
-        errors.length ? `错误 ${errors.length} 项` : '',
-        warnings.length ? `警告 ${warnings.length} 项` : '',
-      ]
-        .filter(Boolean)
-        .join('，');
-
-      if (quickOk) {
-        finish(valAct, warnings.length ? 'warning' : 'success', valDetail);
-        problem = normalized;
-        callbacks.onProblem?.(normalized);
-        finalContent = `好的，我为你准备了一道 **${normalized.topicId}** 练习题：\n\n### ${normalized.title}\n\n${normalized.description}\n\n**难度**：${'⭐'.repeat(normalized.difficulty)}\n\n**示例**：\n${formatExamples(normalized.examples)}\n\n**约束**：\n${(normalized.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！输入 "/submit" 或点击运行后我会帮你评估。`;
+      if (validated && quickValidate(validated)) {
+        problem = validated;
+        callbacks.onProblem?.(validated);
+        finalContent = `好的，我为你准备了一道 **${validated.topicId}** 练习题：\n\n### ${validated.title}\n\n${validated.description}\n\n**难度**：${'⭐'.repeat(validated.difficulty)}\n\n**示例**：\n${formatExamples(validated.examples)}\n\n**约束**：\n${(validated.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！输入 "/submit" 或点击运行后我会帮你评估。`;
       } else {
-        finish(valAct, 'error', valDetail + '，降级到本地题库');
         // Fall back to local problem
         const localProblem = getRandomProblem();
         problem = localProblem;
         callbacks.onProblem?.(localProblem);
-        finalContent = `我尝试为你生成一道题目，但生成的题目未通过质量验证（${errors.map(e => e.message).join('；')}）。我从本地题库为你挑选了一道题目：\n\n### ${localProblem.title}\n\n${localProblem.description}\n\n**难度**：${'⭐'.repeat(localProblem.difficulty)}\n\n**知识点**：${localProblem.topicId}\n\n**示例**：\n${formatExamples(localProblem.examples)}\n\n**约束**：\n${(localProblem.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！`;
+        finalContent = `我尝试为你生成一道题目，但生成的题目未通过质量验证（${validationText}）。我从本地题库为你挑选了一道题目：\n\n### ${localProblem.title}\n\n${localProblem.description}\n\n**难度**：${'⭐'.repeat(localProblem.difficulty)}\n\n**知识点**：${localProblem.topicId}\n\n**示例**：\n${formatExamples(localProblem.examples)}\n\n**约束**：\n${(localProblem.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！`;
       }
     } else {
-      const valAct = newActivity(agentRole, 'validate', '解析题目 JSON 失败', {
-        status: 'error',
-      });
+      const valAct = newActivity(agentRole, 'tool_call', '调用工具：validate_problem（解析题目 JSON 失败）');
       emit(valAct);
       finish(valAct, 'error', '返回内容中未找到有效 JSON，降级到本地题库');
       const localProblem = getRandomProblem();
@@ -900,24 +893,39 @@ export async function streamBrowserLLMMultiStep(
       const rawProblem = extractProblem(stepContent);
       if (rawProblem) {
         const normalized = normalizeProblem(rawProblem);
-        const valAct = newActivity(step.agent, 'validate', '验证题目结构与质量');
-        emit(valAct);
 
-        const issues = validateProblemStructure(normalized);
-        const quickOk = quickValidate(normalized);
+        // Step 7: Validate problem using validate_problem tool, with auto-repair
+        const { problem: validated, validationText } = await validateAndRepairProblem(
+          normalized,
+          step.agent,
+          baseURL,
+          model,
+          settings.apiKey,
+          emit,
+          finish,
+          apiMessages,
+          fullSystem,
+          1 // one repair attempt
+        );
 
-        if (quickOk) {
-          finish(valAct, 'success', '结构验证通过');
-          problem = normalized;
-          callbacks.onProblem?.(normalized);
-          stepFinalContent = `好的，我为你准备了一道 **${normalized.topicId}** 练习题：\n\n### ${normalized.title}\n\n${normalized.description}\n\n**难度**：${'⭐'.repeat(normalized.difficulty)}\n\n**示例**：\n${formatExamples(normalized.examples)}\n\n**约束**：\n${(normalized.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！`;
+        if (validated && quickValidate(validated)) {
+          problem = validated;
+          callbacks.onProblem?.(validated);
+          stepFinalContent = `好的，我为你准备了一道 **${validated.topicId}** 练习题：\n\n### ${validated.title}\n\n${validated.description}\n\n**难度**：${'⭐'.repeat(validated.difficulty)}\n\n**示例**：\n${formatExamples(validated.examples)}\n\n**约束**：\n${(validated.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！`;
         } else {
-          finish(valAct, 'error', `验证失败，降级到本地题库`);
           const localProblem = getRandomProblem();
           problem = localProblem;
           callbacks.onProblem?.(localProblem);
-          stepFinalContent = `我从本地题库为你挑选了一道题目：\n\n### ${localProblem.title}\n\n${localProblem.description}\n\n**难度**：${'⭐'.repeat(localProblem.difficulty)}\n\n快在右侧练习台编写你的 Python 代码吧！`;
+          stepFinalContent = `我尝试为你生成一道题目，但生成的题目未通过质量验证（${validationText}）。我从本地题库为你挑选了一道题目：\n\n### ${localProblem.title}\n\n${localProblem.description}\n\n**难度**：${'⭐'.repeat(localProblem.difficulty)}\n\n快在右侧练习台编写你的 Python 代码吧！`;
         }
+      } else {
+        const valAct = newActivity(step.agent, 'tool_call', '调用工具：validate_problem（解析题目 JSON 失败）');
+        emit(valAct);
+        finish(valAct, 'error', '返回内容中未找到有效 JSON，降级到本地题库');
+        const localProblem = getRandomProblem();
+        problem = localProblem;
+        callbacks.onProblem?.(localProblem);
+        stepFinalContent = `我尝试生成练习题，但返回格式不太对。我从本地题库为你挑选了一道题目：\n\n### ${localProblem.title}\n\n${localProblem.description}\n\n**难度**：${'⭐'.repeat(localProblem.difficulty)}\n\n快在右侧练习台编写你的 Python 代码吧！`;
       }
     }
 
@@ -1379,6 +1387,116 @@ function buildLegacyTrail(
     trail.push({ agent: primaryAgent, action: actionMap[mode] || '处理请求', timestamp: Date.now() });
   }
   return trail;
+}
+
+// ============================================================
+// Problem validation & repair (shared by single-step and multi-step)
+// ============================================================
+
+async function validateAndRepairProblem(
+  normalized: AlgorithmProblem,
+  agentRole: AgentRole,
+  baseURL: string,
+  model: string,
+  apiKey: string,
+  emit: (a: AgentActivity) => void,
+  finish: (a: AgentActivity, status?: AgentActivity['status'], detail?: string) => AgentActivity,
+  apiMessages: Array<{ role: string; content: string }>,
+  repairSystemPrompt: string,
+  maxRetries = 1
+): Promise<{ problem: AlgorithmProblem | null; validationText: string }> {
+  let currentProblem = normalized;
+  let lastResult = await toolRegistry.execute('validate_problem', {
+    problem: JSON.stringify(currentProblem),
+  });
+  let attempts = 0;
+
+  const finishValidation = (
+    act: AgentActivity,
+    status: AgentActivity['status'],
+    detail: string
+  ) => {
+    finish(act, status, detail.slice(0, 300));
+  };
+
+  const createValAct = (labelSuffix = '') =>
+    newActivity(
+      agentRole,
+      'tool_call',
+      `调用工具：validate_problem（题目结构验证${labelSuffix}）`
+    );
+
+  let valAct = createValAct();
+  emit(valAct);
+
+  while (!lastResult.success && attempts < maxRetries) {
+    attempts++;
+    finishValidation(
+      valAct,
+      'warning',
+      `验证未通过，尝试自动修复（第 ${attempts} 次）\n${lastResult.display || lastResult.error || ''}`
+    );
+
+    const repairAct = newActivity(agentRole, 'thinking', `题目自动修复中…`);
+    emit(repairAct);
+
+    const repairMessages = [
+      { role: 'system', content: repairSystemPrompt },
+      ...apiMessages.filter((m) => m.role === 'user'),
+      {
+        role: 'user',
+        content:
+          `你之前生成的题目未通过质量验证，请根据以下验证结果修复题目，并返回修复后的完整 JSON。\n\n` +
+          `验证问题：\n${lastResult.display || lastResult.error || '未知错误'}\n\n` +
+          `原题目 JSON：\n\`\`\`json\n${JSON.stringify(currentProblem, null, 2)}\n\`\`\`\n\n` +
+          `请只返回修复后的 JSON，不要附加其他说明。`,
+      },
+    ];
+
+    const repairRes = await fetch(`${baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: repairMessages,
+        temperature: 0.3,
+        max_tokens: 2500,
+      }),
+    });
+
+    if (repairRes.ok) {
+      const repairData = await repairRes.json();
+      const repairContent = repairData.choices?.[0]?.message?.content || '';
+      const repairedRaw = extractProblem(repairContent);
+      if (repairedRaw) {
+        currentProblem = normalizeProblem(repairedRaw);
+      }
+    }
+
+    finish(repairAct, 'success', `完成自动修复尝试 ${attempts}`);
+
+    // Re-validate
+    valAct = createValAct(' · 修复后');
+    emit(valAct);
+    lastResult = await toolRegistry.execute('validate_problem', {
+      problem: JSON.stringify(currentProblem),
+    });
+  }
+
+  if (lastResult.success) {
+    finishValidation(valAct, 'success', lastResult.display || '验证通过');
+    return { problem: currentProblem, validationText: lastResult.display || '验证通过' };
+  }
+
+  finishValidation(
+    valAct,
+    'error',
+    lastResult.display || lastResult.error || '验证失败'
+  );
+  return { problem: null, validationText: lastResult.display || lastResult.error || '验证失败' };
 }
 
 // ============================================================
