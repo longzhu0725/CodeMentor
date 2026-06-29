@@ -11,6 +11,11 @@ import { CodeExecutionResult } from '@/types';
 //   runCode(code, options?)                        -> Promise<CodeExecutionResult>
 //   runTestCases(code, testCases, functionName, options?)
 //                                                   -> Promise<CodeExecutionResult>
+//
+// Supported data structures (auto-converted from LeetCode-style list inputs):
+//   - ListNode:  [1,2,3]  -> linked list
+//   - TreeNode:  [4,2,7,1,3,6,9]  -> binary tree (level-order)
+//   - null in inputs is auto-replaced with Python None
 // ============================================================
 
 const PYODIDE_CDN = 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full/';
@@ -23,7 +28,6 @@ export interface ProblemTestCase {
 
 export interface RunCodeOptions {
   timeoutMs?: number;
-  /** If provided, auto-invoke this function with the sample input after exec. */
   functionName?: string;
   /** Sample input to pass to functionName (Python literal string, e.g. "[2,7,11,15], 9"). */
   sampleInput?: string;
@@ -59,6 +63,354 @@ interface RunResult {
 }
 
 // ------------------------------------------------------------
+// Python harnesses (kept as plain strings, injected into the worker)
+// We use String.raw + tagged concatenation to avoid backtick escaping issues.
+// ------------------------------------------------------------
+
+const RUN_HARNESS = String.raw`import sys, io, json, traceback as _tb, ast as _ast, re as _re
+from collections import deque as _deque
+
+# ---------- Helpers for data structure conversion ----------
+
+def _parse_input(s):
+    """Parse a Python literal argument string, converting JS-style 'null' -> None."""
+    if s is None:
+        return ()
+    s2 = str(s).strip()
+    if not s2:
+        return ()
+    s2 = _re.sub(r'\bnull\b', 'None', s2)
+    try:
+        v = _ast.literal_eval(s2)
+    except Exception:
+        try:
+            v = _ast.literal_eval("(" + s2 + ",)")
+        except Exception:
+            raise ValueError("cannot parse input: " + s2[:80])
+    if isinstance(v, tuple):
+        return list(v)
+    return [v]
+
+def _is_listnode_cls(cls):
+    if cls is None: return False
+    try:
+        inst = cls()
+        return hasattr(inst, "val") and hasattr(inst, "next")
+    except Exception:
+        return False
+
+def _is_treenode_cls(cls):
+    if cls is None: return False
+    try:
+        inst = cls()
+        return hasattr(inst, "val") and hasattr(inst, "left") and hasattr(inst, "right")
+    except Exception:
+        return False
+
+def _to_listnode(values, cls):
+    dummy = cls()
+    cur = dummy
+    for v in values:
+        cur.next = cls(v)
+        cur = cur.next
+    return dummy.next
+
+def _to_treenode(values, cls):
+    """Build binary tree from level-order list (LeetCode convention)."""
+    if not values:
+        return None
+    root = cls(values[0])
+    q = _deque([root])
+    i = 1
+    while q and i < len(values):
+        node = q.popleft()
+        if i < len(values) and values[i] is not None:
+            node.left = cls(values[i])
+            q.append(node.left)
+        i += 1
+        if i < len(values) and values[i] is not None:
+            node.right = cls(values[i])
+            q.append(node.right)
+        i += 1
+    return root
+
+def _adapt_arg(arg, ns):
+    """Returns (converted_value, was_adapted)."""
+    listnode_cls = ns.get("ListNode") if _is_listnode_cls(ns.get("ListNode")) else None
+    treenode_cls = ns.get("TreeNode") if _is_treenode_cls(ns.get("TreeNode")) else None
+    if isinstance(arg, list) and not any(isinstance(x, (list, tuple, dict)) for x in arg):
+        if treenode_cls is not None:
+            return _to_treenode(arg, treenode_cls), True
+        if listnode_cls is not None:
+            return _to_listnode(arg, listnode_cls), True
+    return arg, False
+
+_result = {"output": "", "error": "", "returnValue": None, "calledFunction": False}
+_ns = {}
+_buf = io.StringIO()
+sys.stdout = _buf
+try:
+    exec(userCode, _ns)
+    if funcName and sampleInput is not None:
+        _fn = _ns.get(funcName)
+        if _fn is not None:
+            _result["calledFunction"] = True
+            try:
+                _parsed = _parse_input(sampleInput)
+                _adapted = []
+                _any_adapted = False
+                for _a in _parsed:
+                    _v, _ad = _adapt_arg(_a, _ns)
+                    _adapted.append(_v)
+                    if _ad: _any_adapted = True
+                try:
+                    _ret = _fn(*_adapted)
+                except (TypeError, AttributeError):
+                    if _any_adapted:
+                        _ret = _fn(*_parsed)
+                    else:
+                        raise
+                _result["returnValue"] = str(_ret)
+            except Exception:
+                _result["error"] = "调用函数时出错:\n" + _tb.format_exc()
+except Exception:
+    _result["error"] = _tb.format_exc()
+finally:
+    sys.stdout = sys.__stdout__
+_result["output"] = _buf.getvalue()
+json.dumps(_result, ensure_ascii=False)`;
+
+const TEST_HARNESS = String.raw`import json, ast, traceback as _tb, re as _re
+from collections import deque as _deque
+
+# ---------- Serialization ----------
+
+def _treenode_to_list(root):
+    """Serialize a binary tree to level-order list, stripping trailing None."""
+    if root is None:
+        return []
+    out = []
+    q = _deque([root])
+    while q:
+        node = q.popleft()
+        if node is None:
+            out.append(None)
+        else:
+            out.append(node.val)
+            q.append(node.left)
+            q.append(node.right)
+    while out and out[-1] is None:
+        out.pop()
+    return out
+
+def _serialize(obj):
+    if obj is None:
+        return None
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, (int, float, str)):
+        return obj
+    if isinstance(obj, list):
+        return [_serialize(x) for x in obj]
+    if isinstance(obj, tuple):
+        return [_serialize(x) for x in obj]
+    # TreeNode (must check before ListNode since both have 'val')
+    if hasattr(obj, "val") and hasattr(obj, "left") and hasattr(obj, "right"):
+        return _treenode_to_list(obj)
+    # ListNode
+    if hasattr(obj, "val") and hasattr(obj, "next"):
+        out = []
+        cur = obj
+        _safety = 10000
+        while cur is not None and _safety > 0:
+            out.append(_serialize(cur.val))
+            cur = cur.next
+            _safety -= 1
+        return out
+    return str(obj)
+
+# ---------- Data structure construction ----------
+
+def _is_listnode_cls(cls):
+    if cls is None: return False
+    try:
+        inst = cls()
+        return hasattr(inst, "val") and hasattr(inst, "next")
+    except Exception:
+        return False
+
+def _is_treenode_cls(cls):
+    if cls is None: return False
+    try:
+        inst = cls()
+        return hasattr(inst, "val") and hasattr(inst, "left") and hasattr(inst, "right")
+    except Exception:
+        return False
+
+def _to_listnode(values, cls):
+    dummy = cls()
+    cur = dummy
+    for v in values:
+        cur.next = cls(v)
+        cur = cur.next
+    return dummy.next
+
+def _to_treenode(values, cls):
+    if not values:
+        return None
+    root = cls(values[0])
+    q = _deque([root])
+    i = 1
+    while q and i < len(values):
+        node = q.popleft()
+        if i < len(values) and values[i] is not None:
+            node.left = cls(values[i])
+            q.append(node.left)
+        i += 1
+        if i < len(values) and values[i] is not None:
+            node.right = cls(values[i])
+            q.append(node.right)
+        i += 1
+    return root
+
+def _parse_arg_str(s):
+    s2 = str(s).strip()
+    s2 = _re.sub(r'\bnull\b', 'None', s2)
+    try:
+        return ast.literal_eval(s2)
+    except Exception:
+        try:
+            v = ast.literal_eval("(" + s2 + ",)")
+            if isinstance(v, tuple) and len(v) == 1:
+                return v[0]
+            return v
+        except Exception:
+            raise ValueError("cannot parse arg: " + repr(s)[:60])
+
+def _parse_input(inp):
+    """Parse test input string into argument list."""
+    s = str(inp).strip()
+    if not s:
+        return []
+    s_norm = _re.sub(r'\bnull\b', 'None', s)
+    # Try as tuple (multiple args)
+    try:
+        v = ast.literal_eval("(" + s_norm + ",)")
+        if isinstance(v, tuple):
+            return list(v)
+    except Exception:
+        pass
+    # Try as single literal
+    try:
+        v = ast.literal_eval(s_norm)
+        return [v]
+    except Exception:
+        pass
+    # Comma-separated fallback
+    if "," in s_norm:
+        parts = [p.strip() for p in s_norm.split(",")]
+        return [_parse_arg_str(p) for p in parts]
+    raise ValueError("cannot parse input: " + repr(inp)[:80])
+
+def _adapt_args(args, ns):
+    """Returns (new_args, adapted_flag). adapted_flag is True if any arg was converted."""
+    listnode_cls = ns.get("ListNode") if _is_listnode_cls(ns.get("ListNode")) else None
+    treenode_cls = ns.get("TreeNode") if _is_treenode_cls(ns.get("TreeNode")) else None
+    new_args = []
+    adapted = False
+    for a in args:
+        # Only convert flat lists to data structures; skip 2D arrays / nested structures
+        if isinstance(a, list) and not any(isinstance(x, (list, tuple, dict)) for x in a):
+            if treenode_cls is not None:
+                new_args.append(_to_treenode(a, treenode_cls))
+                adapted = True
+            elif listnode_cls is not None:
+                new_args.append(_to_listnode(a, listnode_cls))
+                adapted = True
+            else:
+                new_args.append(a)
+        else:
+            new_args.append(a)
+    return new_args, adapted
+
+# ---------- Main test loop ----------
+
+_result = {"success": True, "output": "", "error": "", "testResults": None}
+_ns = {}
+_loaded = True
+try:
+    exec(userCode, _ns)
+except Exception:
+    _result["success"] = False
+    _result["error"] = "代码加载失败:\n" + _tb.format_exc()
+    _loaded = False
+
+if _loaded:
+    _fn = _ns.get(funcName)
+    if _fn is None:
+        _result["success"] = False
+        _result["error"] = "未找到函数: " + str(funcName) + "（请确保代码中定义了该函数）"
+    else:
+        _tests = json.loads(testCasesJson)
+        _passed = 0
+        _total = len(_tests)
+        _failures = []
+        _has_treenode = _is_treenode_cls(_ns.get("TreeNode"))
+        _has_listnode = _is_listnode_cls(_ns.get("ListNode"))
+        for _t in _tests:
+            _inp = _t.get("input", "")
+            _exp = _t.get("expected", "")
+            try:
+                _args = _parse_input(_inp)
+                _args_adapted, _adapted_any = _adapt_args(_args, _ns)
+                try:
+                    _res = _fn(*_args_adapted)
+                except (TypeError, AttributeError):
+                    # Fallback: try without adaptation (in case our heuristic was wrong)
+                    if _adapted_any:
+                        _res = _fn(*_args)
+                        _adapted_any = False
+                    else:
+                        raise
+                _actual = _serialize(_res)
+                # Normalize: if we adapted args to a data structure and got None back,
+                # treat None as empty structure ([]) to match LeetCode convention.
+                if _res is None and _adapted_any and (_has_treenode or _has_listnode):
+                    _actual = []
+                try:
+                    _exp_norm = _re.sub(r'\bnull\b', 'None', str(_exp).strip())
+                    try:
+                        _exp_val = ast.literal_eval(_exp_norm)
+                        _exp_serialized = _serialize(_exp_val)
+                        _ok = _actual == _exp_serialized
+                    except Exception:
+                        _ok = str(_actual).strip() == str(_exp).strip()
+                except Exception:
+                    _ok = str(_actual).strip() == str(_exp).strip()
+                if _ok:
+                    _passed += 1
+                else:
+                    _failures.append({
+                        "input": _inp,
+                        "expected": str(_exp),
+                        "actual": str(_actual)
+                    })
+            except Exception as _e:
+                _failures.append({
+                    "input": _inp,
+                    "expected": str(_exp),
+                    "actual": "",
+                    "error": str(_e)
+                })
+        _result["testResults"] = {"passed": _passed, "total": _total, "failures": _failures}
+        if _passed == _total:
+            _result["output"] = "全部通过！" + str(_passed) + "/" + str(_total) + " 个测试用例"
+        else:
+            _result["output"] = "通过 " + str(_passed) + "/" + str(_total) + " 个测试用例"
+
+json.dumps(_result, ensure_ascii=False)`;
+
+// ------------------------------------------------------------
 // Worker source (inline Blob)
 // ------------------------------------------------------------
 const WORKER_SOURCE = `
@@ -73,140 +425,8 @@ function getPyodide() {
   return pyodidePromise;
 }
 
-// Harness: run arbitrary student code, capture stdout + errors.
-// If functionName and sampleInput are provided, also call the function.
-const RUN_HARNESS = \`import sys, io, json, traceback as _tb, ast as _ast
-_result = {"output": "", "error": "", "returnValue": None, "calledFunction": False}
-_ns = {}
-_buf = io.StringIO()
-sys.stdout = _buf
-try:
-    exec(userCode, _ns)
-    if funcName and sampleInput is not None:
-        _fn = _ns.get(funcName)
-        if _fn is not None:
-            _result["calledFunction"] = True
-            try:
-                _parsed = _ast.literal_eval("(" + sampleInput + ",)")
-                _ret = _fn(*_parsed)
-                _result["returnValue"] = str(_ret)
-            except Exception as _call_err:
-                try:
-                    _parsed = _ast.literal_eval(sampleInput)
-                    if isinstance(_parsed, tuple):
-                        _ret = _fn(*list(_parsed))
-                    else:
-                        _ret = _fn(_parsed)
-                    _result["returnValue"] = str(_ret)
-                except Exception as _call_err2:
-                    _result["error"] = "调用函数时出错: " + _tb.format_exc()
-except Exception:
-    _result["error"] = _tb.format_exc()
-finally:
-    sys.stdout = sys.__stdout__
-_result["output"] = _buf.getvalue()
-json.dumps(_result, ensure_ascii=False)\`;
-
-// Harness: run student code against a list of test cases.
-const TEST_HARNESS = \`import json, ast, traceback as _tb
-
-def _serialize(obj):
-    if obj is None:
-        return None
-    if isinstance(obj, bool):
-        return obj
-    if isinstance(obj, (int, float, str)):
-        return obj
-    if isinstance(obj, list):
-        return [_serialize(x) for x in obj]
-    if isinstance(obj, tuple):
-        return [_serialize(x) for x in obj]
-    if hasattr(obj, "val") and hasattr(obj, "next"):
-        out = []
-        cur = obj
-        while cur:
-            out.append(cur.val)
-            cur = cur.next
-        return out
-    return str(obj)
-
-def _to_listnode(values, cls):
-    if cls is None:
-        return values, False
-    dummy = cls()
-    cur = dummy
-    for v in values:
-        cur.next = cls(v)
-        cur = cur.next
-    return dummy.next, True
-
-def _adapt_args(args, ns):
-    listnode = ns.get("ListNode")
-    new_args = []
-    adapted = False
-    for a in args:
-        if isinstance(a, list) and listnode is not None:
-            ln, _ = _to_listnode(a, listnode)
-            new_args.append(ln)
-            adapted = True
-        else:
-            new_args.append(a)
-    return new_args, adapted
-
-_result = {"success": True, "output": "", "error": "", "testResults": None}
-_ns = {}
-_loaded = True
-try:
-    exec(userCode, _ns)
-except Exception:
-    _result["success"] = False
-    _result["error"] = "代码加载失败:\\n" + _tb.format_exc()
-    _loaded = False
-
-if _loaded:
-    _fn = _ns.get(funcName)
-    if _fn is None:
-        _result["success"] = False
-        _result["error"] = "未找到函数: " + str(funcName)
-    else:
-        _tests = json.loads(testCasesJson)
-        _passed = 0
-        _total = len(_tests)
-        _failures = []
-        for _t in _tests:
-            _inp = _t.get("input", "")
-            _exp = _t.get("expected", "")
-            try:
-                _parsed = ast.literal_eval(_inp)
-                if isinstance(_parsed, tuple):
-                    _args = list(_parsed)
-                else:
-                    _args = [_parsed]
-                try:
-                    _res = _fn(*_args)
-                except AttributeError:
-                    _new, _adapted = _adapt_args(_args, _ns)
-                    if _adapted:
-                        _res = _fn(*_new)
-                    else:
-                        raise
-                _actual = _serialize(_res)
-                try:
-                    _exp_val = ast.literal_eval(_exp)
-                    _exp_serialized = _serialize(_exp_val)
-                    _ok = _actual == _exp_serialized
-                except Exception:
-                    _ok = str(_actual).strip() == str(_exp).strip()
-                if _ok:
-                    _passed = _passed + 1
-                else:
-                    _failures.append({"input": _inp, "expected": _exp, "actual": str(_actual)})
-            except Exception as _e:
-                _failures.append({"input": _inp, "expected": _exp, "actual": "", "error": str(_e)})
-        _result["testResults"] = {"passed": _passed, "total": _total, "failures": _failures}
-        _result["output"] = "通过 " + str(_passed) + "/" + str(_total) + " 个测试用例"
-
-json.dumps(_result, ensure_ascii=False)\`;
+const RUN_HARNESS = ${JSON.stringify(RUN_HARNESS)};
+const TEST_HARNESS = ${JSON.stringify(TEST_HARNESS)};
 
 self.onmessage = async (e) => {
   const data = e.data;
@@ -366,11 +586,6 @@ class PyodideRunner {
     this.readyPromise = null;
   }
 
-  /**
-   * Run Python code. If functionName + sampleInput are provided,
-   * the function is auto-invoked with the sample input after exec,
-   * and the return value is appended to stdout.
-   */
   async runCode(code: string, options: RunCodeOptions = {}): Promise<CodeExecutionResult> {
     const { timeoutMs = 10000, functionName, sampleInput } = options;
     await this.load();
@@ -390,7 +605,6 @@ class PyodideRunner {
     };
   }
 
-  /** Run student code against a set of test cases. */
   async runTestCases(
     code: string,
     testCases: ProblemTestCase[],

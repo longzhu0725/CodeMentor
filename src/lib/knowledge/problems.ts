@@ -558,9 +558,9 @@ def merge_two_lists(l1, l2):
     # 在这里写你的代码
     pass`,
     testCases: [
-      { input: '[1,2,3]', expectedOutput: '6' },
-      { input: '[0,1]', expectedOutput: '2' },
-      { input: '[1]', expectedOutput: '1' },
+      { input: '[1,2,3]', expectedOutput: '[[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]]' },
+      { input: '[0,1]', expectedOutput: '[[0,1],[1,0]]' },
+      { input: '[1]', expectedOutput: '[[1]]' },
     ],
     hints: [
       '回溯模板：选择-递归-撤销选择',
