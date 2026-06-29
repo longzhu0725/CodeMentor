@@ -89,6 +89,39 @@ export interface IntentRecognitionResult {
   reasoning: string;
 }
 
+/**
+ * A step in a multi-agent execution plan.
+ * Produced by the orchestrator's LLM-based task decomposition.
+ */
+export interface AgentStep {
+  /** Which agent should execute this step */
+  agent: AgentRole;
+  /** Corresponding interaction mode */
+  mode: 'chat' | 'practice' | 'plan' | 'review';
+  /** Concrete task description given to the agent */
+  task: string;
+  /** Reasoning for why this agent is assigned to this step */
+  reason?: string;
+  /** Whether the step should receive output from previous steps as context */
+  usePrevContext: boolean;
+}
+
+/**
+ * Structured output from the orchestrator LLM when decomposing a request.
+ */
+export interface OrchestratorPlan {
+  /** Analysis of the user's request */
+  analysis: string;
+  /** Whether the request is ambiguous and needs user clarification */
+  requiresClarification: boolean;
+  /** Question to ask the user if clarification is needed */
+  clarificationQuestion?: string;
+  /** Recognized intents with confidence */
+  intents: { intent: UserIntent; confidence: number; topic?: string }[];
+  /** Execution plan as a sequence of agent steps */
+  plan: AgentStep[];
+}
+
 // --- Knowledge Types ---
 
 export interface KnowledgeTopic {

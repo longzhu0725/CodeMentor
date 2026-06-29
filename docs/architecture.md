@@ -41,16 +41,17 @@ CodeMentor 采用**浏览器端优先**的架构设计，所有核心逻辑（Ag
   ↓
 useChat.sendMessage(text, context)
   ↓
-detectMultiStepRequest() → 检测多意图
-  ├─ 多步请求 → streamBrowserLLMMultiStep()
+inferMode() 规则初筛（兜底）
+  ↓
+若配置了 API Key：decomposeWithLLM() 总控 Agent 做 LLM 意图分解
+  ├─ 需要澄清 → 直接返回澄清问题（不调用子 Agent）
+  ├─ 多步计划（plan.length > 1）→ streamBrowserLLMMultiStep()
   │    ├─ 总控规划：分解为 AgentStep 序列
   │    ├─ Step 1: Agent A → 流式输出 → 存为 prevOutput
   │    ├─ 总控过渡：传递上下文
   │    ├─ Step 2: Agent B → 注入 prevOutput → 流式输出
   │    └─ 合并所有步骤输出
-  └─ 单步请求 → inferMode() 识别意图 (chat/practice/plan/review)
-       ↓
-       browser-client.streamBrowserLLM()
+  └─ 单步计划 → streamBrowserLLM() 按 mode 路由
        ├─ onActivity → liveActivities (实时活动更新)
        ├─ onToken    → streamingContent (流式文本)
        └─ onProblem  → currentProblem (题目解析)
@@ -65,6 +66,17 @@ ChatPanel 渲染:
   - ThinkingChain (内联思维链，消息下方)
   - StreamingBubble (流式输出时)
 ```
+
+### 意图分解策略
+
+采用**规则兜底 + LLM 精判**的混合策略：
+
+| 场景 | 处理方式 | 原因 |
+|---|---|---|
+| 未配置 API Key / 演示模式 | `inferMode()` 规则路由 | 无需 LLM，零成本 |
+| LLM 分解失败 | 回退到 `inferMode()` 单步模式 | 保证可用性 |
+| 配置了 API Key | `decomposeWithLLM()` 总控 Agent 分解 | 理解多意图、同义、隐含请求 |
+| 歧义请求 | 总控直接追问澄清 | 避免猜测用户意图 |
 
 ### 练习模式数据流
 

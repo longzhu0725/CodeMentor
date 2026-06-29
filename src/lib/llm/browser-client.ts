@@ -9,6 +9,8 @@ import {
   AgentActivity,
   AgentRole,
   AgentParadigm,
+  AgentStep,
+  OrchestratorPlan,
 } from '@/types';
 import {
   LLMProvider,
@@ -386,15 +388,229 @@ export async function streamBrowserLLM(
 }
 
 // ============================================================
-// Multi-step orchestration (sequential multi-agent)
+// Orchestrator task decomposition via LLM
 // ============================================================
 
-export interface AgentStep {
-  agent: AgentRole;
-  mode: 'chat' | 'practice' | 'plan' | 'review';
-  task: string;
-  usePrevContext: boolean;
+const ORCHESTRATOR_DECOMPOSITION_PROMPT = `你是 CodeMentor 的总控 Agent（Orchestrator），负责分析学生的请求并将其分解为可由专业 Agent 顺序执行的任务计划。
+
+## 可用 Agent 及其职责
+
+1. **lecturer（讲师）**
+   - 职责：讲解算法与数据结构概念、回答概念性问题、用苏格拉底式引导帮助学生理解
+   - 适用场景：学生提问"什么是XXX"、"讲一下XXX"、"解释XXX"等
+
+2. **problem_setter（出题官）**
+   - 职责：生成练习题、算法题
+   - 适用场景：学生要求出题、练习、做题、考考我等
+
+3. **examiner（考官）**
+   - 职责：评估代码、给出改进建议
+   - 适用场景：学生提交代码、要求代码评估/审查等
+
+4. **path_planner（规划师）**
+   - 职责：制定学习计划、学习路径
+   - 适用场景：学生要求学习计划、规划、路线图、怎么学等
+
+## 你的任务
+
+请分析学生的最新输入，完成以下工作：
+1. **识别所有意图**：一句话可能包含多个意图，必须全部列出
+2. **判断是否需要澄清**：如果请求存在歧义、缺少关键信息或自相矛盾，必须设置 requiresClarification=true，并给出具体的澄清问题
+3. **生成执行计划**：将请求分解为按顺序执行的 AgentStep 序列
+
+## 执行计划规则
+
+- 每个步骤必须指定一个最合适的 Agent（lecturer / problem_setter / examiner / path_planner）
+- 每个步骤必须对应一个 mode：chat（答疑）、practice（练习）、plan（规划）、review（审查）
+- 如果多个意图存在依赖关系（如"先讲解再出题"），必须按依赖顺序排列
+- 上游 Agent 的输出可以通过 usePrevContext=true 传递给下游 Agent
+- 不要猜测用户未提供的信息
+- 不要分配不相关的 Agent
+
+## 输出格式
+
+必须返回严格的 JSON 格式，不要包含任何 Markdown 代码块或额外解释：
+
+{
+  "analysis": "对用户请求的分析，列出识别出的意图与潜在歧义",
+  "requiresClarification": false,
+  "clarificationQuestion": null,
+  "intents": [
+    { "intent": "chat", "confidence": 0.95, "topic": "数组" }
+  ],
+  "plan": [
+    {
+      "agent": "lecturer",
+      "mode": "chat",
+      "task": "请讲解数组的基本概念、特点和应用场景",
+      "reason": "用户要求先讲解数组概念",
+      "usePrevContext": false
+    },
+    {
+      "agent": "problem_setter",
+      "mode": "practice",
+      "task": "基于数组概念出一道练习题",
+      "reason": "用户要求在讲解后再出一道数组练习题",
+      "usePrevContext": true
+    }
+  ]
 }
+
+## 示例
+
+用户输入："先给我讲解一下数组，再出一道相关的题"
+输出：
+{
+  "analysis": "用户有两个意图：1) 了解数组概念；2) 获得一道数组练习题。两个意图有先后依赖关系。",
+  "requiresClarification": false,
+  "clarificationQuestion": null,
+  "intents": [
+    { "intent": "chat", "confidence": 0.95, "topic": "数组" },
+    { "intent": "practice", "confidence": 0.92, "topic": "数组" }
+  ],
+  "plan": [
+    {
+      "agent": "lecturer",
+      "mode": "chat",
+      "task": "请讲解数组的基本概念、存储结构、时间复杂度特点以及常见应用场景。",
+      "reason": "用户要求先讲解数组概念",
+      "usePrevContext": false
+    },
+    {
+      "agent": "problem_setter",
+      "mode": "practice",
+      "task": "基于刚才讲解的数组知识，出一道适合初学者的数组练习题，包含示例和测试用例。",
+      "reason": "用户要求在讲解后再获得练习题",
+      "usePrevContext": true
+    }
+  ]
+}
+
+用户输入："帮我规划一下怎么学算法"
+输出：
+{
+  "analysis": "用户请求制定算法学习计划，单个规划意图。",
+  "requiresClarification": false,
+  "clarificationQuestion": null,
+  "intents": [
+    { "intent": "plan", "confidence": 0.95 }
+  ],
+  "plan": [
+    {
+      "agent": "path_planner",
+      "mode": "plan",
+      "task": "为学生制定一份个性化的算法学习计划",
+      "reason": "用户请求学习路径规划",
+      "usePrevContext": false
+    }
+  ]
+}
+
+用户输入："发给他"
+输出：
+{
+  "analysis": "用户意图不明确，缺少关键信息：发给谁、发什么、通过什么方式发送。",
+  "requiresClarification": true,
+  "clarificationQuestion": "请问你要发给谁？发送什么内容？通过什么方式发送？",
+  "intents": [],
+  "plan": []
+}`;
+
+/**
+ * Use the orchestrator LLM to decompose a user request into an execution plan.
+ * Returns null if decomposition fails (caller should fall back to single-step mode).
+ */
+export async function decomposeWithLLM(
+  messages: AgentMessage[],
+  settings: BrowserLLMSettings,
+  learnerState: LearnerState,
+  context?: ChatContext
+): Promise<OrchestratorPlan | null> {
+  const { baseURL, model } = resolveEndpoint(settings);
+
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
+  if (!lastUserMessage) return null;
+
+  const learnerContext = buildLearnerContext(learnerState, 'chat', context);
+
+  const apiMessages: Array<{ role: string; content: string }> = [
+    { role: 'system', content: ORCHESTRATOR_DECOMPOSITION_PROMPT + '\n\n' + learnerContext },
+    ...messages.slice(-6).map((m) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: m.content,
+    })),
+  ];
+
+  try {
+    const res = await fetch(`${baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: apiMessages,
+        temperature: 0.2,
+        max_tokens: 1500,
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      console.warn('[decomposeWithLLM] API error:', res.status, detail.slice(0, 200));
+      return null;
+    }
+
+    const data = await res.json();
+    const rawContent = data.choices?.[0]?.message?.content || '';
+
+    // Try to extract JSON from the response
+    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+    const jsonStr = jsonMatch ? jsonMatch[0] : rawContent;
+
+    const parsed = JSON.parse(jsonStr) as Partial<OrchestratorPlan>;
+
+    // Validate the plan
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.requiresClarification) {
+      return {
+        analysis: parsed.analysis || '',
+        requiresClarification: true,
+        clarificationQuestion: parsed.clarificationQuestion,
+        intents: [],
+        plan: [],
+      };
+    }
+
+    const plan = Array.isArray(parsed.plan) ? parsed.plan : [];
+    const validPlan = plan.filter((step): step is AgentStep => {
+      return (
+        !!step &&
+        typeof step === 'object' &&
+        typeof step.task === 'string' &&
+        ['lecturer', 'problem_setter', 'examiner', 'path_planner'].includes(step.agent) &&
+        ['chat', 'practice', 'plan', 'review'].includes(step.mode)
+      );
+    });
+
+    if (validPlan.length === 0) return null;
+
+    return {
+      analysis: parsed.analysis || '',
+      requiresClarification: false,
+      intents: Array.isArray(parsed.intents) ? parsed.intents : [],
+      plan: validPlan,
+    };
+  } catch (err) {
+    console.warn('[decomposeWithLLM] parse error:', err);
+    return null;
+  }
+}
+
+// ============================================================
+// Multi-step orchestration (sequential multi-agent)
+// ============================================================
 
 const AGENT_SKILL_MAP: Record<AgentRole, string> = {
   orchestrator: 'socratic-teaching',

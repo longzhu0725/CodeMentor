@@ -167,32 +167,41 @@ streamBrowserLLM() 开始
 
 ## 多智能体顺序编排
 
-当用户请求包含多个意图时（如"先讲解数组，再出一道题"），系统自动检测并启动多步编排流程。
+当用户请求包含多个意图时（如"先讲解数组，再出一道题"），由总控 Agent 通过 LLM 推理完成意图分解，再启动多步编排流程。
 
-### 多意图检测（detectMultiStepRequest）
+### 总控 Agent 外交：LLM 意图分解（decomposeWithLLM）
 
-检测逻辑：
-1. 识别各意图关键词（讲解/出题/规划/审查）
-2. 检测顺序连接词（先...再...、然后、接着）
-3. 当检测到 2 个以上意图 + 顺序连接词时，返回 AgentStep 序列
+多意图识别**不由前端 UI 做关键字匹配**，而是由总控 Agent 调用一次非流式 LLM 完成。这符合"外交（Diplomacy）"设计：总控作为唯一调度中枢，理解复杂请求、判断歧义、生成执行计划。
 
-支持的组合模式：
+`decomposeWithLLM()` 的输入与输出：
 
-| 用户输入模式 | 检测结果 | 执行顺序 |
-|---|---|---|
-| "先讲解数组，再出一道题" | 讲解 + 练习 | 讲师(chat) → 出题官(practice) |
-| "讲解一下二叉树然后给我规划学习路径" | 讲解 + 规划 | 讲师(chat) → 规划师(plan) |
-| "出题然后评估" | 练习 + 审查 | 出题官(practice) → 考官(review) |
+- **输入**：当前对话历史、学习者状态、上下文
+- **输出**：`OrchestratorPlan`
+  - `analysis`：对用户请求的分析
+  - `requiresClarification`：是否需要澄清
+  - `clarificationQuestion`：需要澄清时的问题
+  - `intents`：识别出的所有意图及置信度
+  - `plan`：`AgentStep[]` 执行计划序列
+
+### 设计原则
+
+1. **总控负责理解**：关键字匹配只能覆盖固定模式，而 LLM 能理解同义、隐含、多意图请求
+2. **歧义时主动澄清**：对于"发给他"这类模糊输入，总控不猜测，直接追问
+3. **失败回退**：若 LLM 分解失败，系统回退到单步规则路由（`inferMode`）
+4. **计划即契约**：每个 `AgentStep` 明确指定 `agent`、`mode`、`task`、`usePrevContext`
 
 ### 顺序编排流程（streamBrowserLLMMultiStep）
 
 ```
 用户输入: "先给我讲解一下数组，再出一道相关的题"
   │
-  ├─ detectMultiStepRequest() → [
-  │    {agent: 'lecturer', mode: 'chat', task: '讲解数组', usePrevContext: false},
-  │    {agent: 'problem_setter', mode: 'practice', task: '基于数组出题', usePrevContext: true}
-  │  ]
+  ├─ decomposeWithLLM() → OrchestratorPlan
+  │    ├─ analysis: "用户有两个意图：了解数组概念 + 获得数组练习题"
+  │    ├─ requiresClarification: false
+  │    └─ plan: [
+  │         {agent: 'lecturer', mode: 'chat', task: '讲解数组...', usePrevContext: false},
+  │         {agent: 'problem_setter', mode: 'practice', task: '基于数组出题...', usePrevContext: true}
+  │       ]
   │
   ├─ 总控: emit onActivity('多步任务计划: 1.讲师(chat) → 2.出题官(practice)')
   │
