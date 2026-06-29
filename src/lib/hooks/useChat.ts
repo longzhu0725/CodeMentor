@@ -352,7 +352,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
               );
 
           // For multi-step: each step already created its own message via onStepComplete.
-          // Only create a final message for single-step calls.
+          // Attach any remaining orchestrator-level activities (plan overview, transitions, finalize)
+          // to the last assistant message so they're visible in the thinking chain.
           if (!isMultiStep) {
             const finalContent = data.content || stepStreamedText || '（导师暂未返回内容）';
             const finalActivities = turnActivities.length > 0
@@ -367,6 +368,25 @@ export function useChat(options: UseChatOptions): UseChatReturn {
               activities: finalActivities,
             };
             setMessages((prev) => [...prev, assistantMessage]);
+          } else if (turnActivities.length > 0) {
+            // Multi-step: attach remaining orchestrator activities to the last assistant message
+            setMessages((prev) => {
+              const copy = [...prev];
+              // Find the last assistant message
+              for (let i = copy.length - 1; i >= 0; i--) {
+                if (copy[i].role === 'assistant') {
+                  copy[i] = {
+                    ...copy[i],
+                    activities: [
+                      ...(copy[i].activities || []),
+                      ...turnActivities,
+                    ],
+                  };
+                  break;
+                }
+              }
+              return copy;
+            });
           }
 
           setStreamingContent('');

@@ -30,6 +30,13 @@ export type AgentActivityType =
   | 'tool_result'      // 工具返回结果
   | 'thinking'         // 思考/推理过程
   | 'validate'         // 验证/校验步骤
+  | 'plan_created'     // 总控生成执行计划
+  | 'plan_step_start'  // 计划步骤开始执行
+  | 'plan_step_done'   // 计划步骤完成
+  | 'plan_replan'      // 总控重新规划
+  | 'react_thought'    // ReAct: Thought（推理思考）
+  | 'react_action'     // ReAct: Action（决定调用工具）
+  | 'react_observation'// ReAct: Observation（工具返回观察）
   | 'stream_chunk'     // 流式输出片段（内部使用，不展示给用户）
   | 'error';           // 错误/降级
 
@@ -52,6 +59,18 @@ export interface AgentActivity {
   timestamp: number;
   /** Which reasoning paradigm this agent is using (e.g. ReAct, Reflection) */
   paradigm?: AgentParadigm;
+  /** ReAct turn number (groups thought+action+observation into one iteration) */
+  reactTurn?: number;
+  /** Plan step index (for multi-step orchestration visualization) */
+  planStep?: number;
+  /** Total number of plan steps (for progress display) */
+  planTotal?: number;
+  /** Tool name for tool_call/tool_result activities */
+  toolName?: string;
+  /** Tool arguments summary for tool_call */
+  toolArgs?: string;
+  /** Whether this plan step was added during re-planning */
+  isReplanned?: boolean;
 }
 
 export interface AgentMessage {

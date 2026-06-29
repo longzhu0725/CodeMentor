@@ -405,6 +405,38 @@
   border-bottom-left-radius: 4px;
 }
 
+/* New agent message bubble with colored left border */
+.agent-message-bubble {
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  border-bottom-left-radius: 4px;
+  padding: 0.9rem 1.15rem;
+  line-height: 1.65;
+  max-width: 100%;
+  word-break: break-word;
+  border-left: 3px solid var(--agent-color, var(--color-accent));
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  transition: box-shadow 0.2s ease;
+}
+
+.agent-message-bubble:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+}
+
+/* User message bubble - refined gradient */
+.user-message-bubble {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #7c3aed 100%);
+  color: #ffffff;
+  border-radius: 16px;
+  border-bottom-right-radius: 4px;
+  padding: 0.85rem 1.1rem;
+  line-height: 1.6;
+  max-width: 100%;
+  word-break: break-word;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+
 .agent-chip {
   display: inline-flex;
   align-items: center;
@@ -665,4 +697,44 @@
 
 .animate-spin-slow {
   animation: cm-spin-slow 1.5s linear infinite;
+}
+
+/* Subtle pulse for running tool actions */
+@keyframes cm-pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.animate-pulse-subtle {
+  animation: cm-pulse-subtle 2s ease-in-out infinite;
+}
+
+/* Glow effect for active elements */
+@keyframes cm-glow {
+  0%, 100% { box-shadow: 0 0 4px currentColor; }
+  50% { box-shadow: 0 0 12px currentColor; }
+}
+
+.animate-glow {
+  animation: cm-glow 2s ease-in-out infinite;
+}
+
+/* ReAct iteration card styles */
+.react-turn {
+  border-radius: 8px;
+  transition: background-color 0.15s ease;
+}
+
+.react-turn:hover {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Scrollbar for observation/detail panels */
+.react-turn .max-h-48::-webkit-scrollbar {
+  width: 4px;
+}
+
+.react-turn .max-h-48::-webkit-scrollbar-thumb {
+  background-color: #3a3f52;
+  border-radius: 9999px;
 }

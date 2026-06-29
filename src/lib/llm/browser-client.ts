@@ -388,22 +388,8 @@ async function callLLMStep(
     const content = (message.content as string) || '';
     const reasoning = (message.reasoning_content as string) || '';
 
-    // Emit reasoning as a thinking activity if present
-    if (reasoning) {
-      const paradigm = AGENT_PARADIGM[agentRole] as AgentParadigm;
-      callbacks.onActivity?.({
-        id: `act-reasoning-${Date.now()}-${++activityCounter}`,
-        agent: agentRole,
-        type: 'thinking',
-        label: `${AGENT_NAMES[agentRole]} · ${paradigm} 推理完成（${reasoning.length} 字）`,
-        detail: reasoning.length > 800 ? '…' + reasoning.slice(-800) : reasoning,
-        status: 'success',
-        timestamp: Date.now(),
-        durationMs: 0,
-        paradigm,
-      });
-    }
-
+    // Note: reasoning is captured but not emitted here — the ReAct loop
+    // emits it as part of the react_thought activity to avoid duplicate entries.
     return { content, reasoning };
   } catch (err) {
     // Fallback: try streaming call
@@ -451,12 +437,17 @@ async function runReActLoop(
   ];
 
   for (let turn = 0; turn < maxTurns; turn++) {
+    const turnNum = turn + 1;
+
     // --- Call LLM ---
     const llmCallAct = newActivity(
       agentRole,
-      'thinking',
-      `${agentName} · 第 ${turn + 1} 轮推理中…`,
-      { paradigm: AGENT_PARADIGM[agentRole] as AgentParadigm }
+      'react_thought',
+      `${agentName} · 第 ${turnNum} 轮推理中…`,
+      {
+        paradigm: AGENT_PARADIGM[agentRole] as AgentParadigm,
+        reactTurn: turnNum,
+      }
     );
     emit(llmCallAct);
 
@@ -464,25 +455,18 @@ async function runReActLoop(
       baseURL, model, apiKey, reactMessages, agentRole, callbacks
     );
 
-    // If no reasoning_content was emitted by callLLMStep, use the Thought from the response
-    if (!reasoning) {
-      // We'll parse it below and emit as a thinking activity
-    }
-
     // --- Parse the response ---
     const parsed = parseReActResponse(content);
 
-    // Emit Thought as a thinking activity (if not already covered by reasoning_content)
-    if (parsed.thought && !reasoning) {
-      finish(llmCallAct, 'success', parsed.thought.length > 500
-        ? parsed.thought.slice(0, 500) + '…'
-        : parsed.thought
+    // Emit Thought content
+    const thoughtContent = reasoning || parsed.thought;
+    if (thoughtContent) {
+      finish(llmCallAct, 'success', thoughtContent.length > 600
+        ? thoughtContent.slice(0, 600) + '…'
+        : thoughtContent
       );
-    } else if (!reasoning) {
-      finish(llmCallAct, 'success', '（模型未输出 Thought，直接处理）');
     } else {
-      // reasoning_content was already emitted, just finish the indicator
-      finish(llmCallAct, 'success');
+      finish(llmCallAct, 'success', '（模型未输出推理过程）');
     }
 
     // --- Check if LLM wants to Finish ---
@@ -493,10 +477,23 @@ async function runReActLoop(
     }
 
     // --- Execute the tool call ---
+    const toolDisplayName = parsed.rawAction;
+    const normalizedToolName = parsed.toolName; // Normalized snake_case name
+    const argsPreview = parsed.args.length > 60
+      ? parsed.args.slice(0, 60) + '…'
+      : parsed.args;
+
     const toolCallAct = newActivity(
       agentRole,
-      'tool_call',
-      `🎬 行动: ${parsed.rawAction}[${parsed.args.slice(0, 50)}${parsed.args.length > 50 ? '…' : ''}]`
+      'react_action',
+      `调用 ${toolDisplayName}`,
+      {
+        paradigm: AGENT_PARADIGM[agentRole] as AgentParadigm,
+        reactTurn: turnNum,
+        toolName: normalizedToolName, // Use normalized name for UI lookup
+        toolArgs: argsPreview,
+        detail: `参数: ${parsed.args}`,
+      }
     );
     emit(toolCallAct);
 
@@ -504,25 +501,31 @@ async function runReActLoop(
       parsed.toolName, parsed.args, context
     );
 
-    // Emit tool result as tool_result activity
-    const obsPreview = observation.length > 400
-      ? observation.slice(0, 400) + '…'
+    // Finish tool call with result
+    const obsPreview = observation.length > 300
+      ? observation.slice(0, 300) + '…'
       : observation;
     finish(
       toolCallAct,
       success ? 'success' : 'warning',
-      `👀 观察: ${obsPreview}`
+      `${toolDisplayName} 执行${success ? '成功' : '返回警告'}`
     );
 
-    // Also emit a dedicated tool_result activity for clarity
-    const resultAct = newActivity(
+    // Emit observation
+    const obsAct = newActivity(
       agentRole,
-      'tool_result',
-      `${parsed.rawAction} 返回结果（${observation.length} 字）`,
-      { detail: obsPreview, status: success ? 'success' : 'warning' }
+      'react_observation',
+      `${toolDisplayName} 返回结果（${observation.length} 字）`,
+      {
+        paradigm: AGENT_PARADIGM[agentRole] as AgentParadigm,
+        reactTurn: turnNum,
+        toolName: toolDisplayName,
+        detail: obsPreview,
+        status: success ? 'success' : 'warning',
+      }
     );
-    emit(resultAct);
-    finish(resultAct, success ? 'success' : 'warning');
+    emit(obsAct);
+    finish(obsAct, success ? 'success' : 'warning');
 
     // --- Add to conversation history and loop ---
     reactMessages.push({
@@ -1135,6 +1138,24 @@ export async function streamBrowserLLMMultiStep(
   const stepSummary = steps
     .map((s, i) => `${i + 1}.${AGENT_NAMES[s.agent]}(${s.mode})`)
     .join(' → ');
+
+  // Emit plan_created activity with full plan details
+  const planAct = newActivity(
+    'orchestrator',
+    'plan_created',
+    `执行计划（${steps.length} 步）: ${stepSummary}`,
+    {
+      paradigm: 'Plan-and-Execute' as AgentParadigm,
+      detail: steps.map((s, i) =>
+        `${i + 1}. ${AGENT_NAMES[s.agent]}（${s.mode}）: ${s.task}` +
+        (s.reason ? `\n   └─ ${s.reason}` : '')
+      ).join('\n\n'),
+      planTotal: steps.length,
+    }
+  );
+  emit(planAct);
+  finish(planAct, 'success');
+
   finish(orchStart, 'success', `识别为多步任务，计划：${stepSummary}`);
 
   let prevOutput = '';
@@ -1146,6 +1167,20 @@ export async function streamBrowserLLMMultiStep(
     const agentName = AGENT_NAMES[step.agent];
     const skillName = AGENT_SKILL_MAP[step.agent];
     const stepActivitiesStart = activities.length; // Track where this step's activities begin
+
+    // --- Plan step start ---
+    const stepStartAct = newActivity(
+      'orchestrator',
+      'plan_step_start',
+      `第${stepIdx + 1}步/${steps.length}: ${agentName} 开始执行`,
+      {
+        paradigm: 'Plan-and-Execute' as AgentParadigm,
+        planStep: stepIdx,
+        planTotal: steps.length,
+        detail: `任务: ${step.task}`,
+      }
+    );
+    emit(stepStartAct);
 
     // --- Sub-agent starts ---
     const agentStart = newActivity(
@@ -1287,6 +1322,24 @@ export async function streamBrowserLLMMultiStep(
     emit(agentEnd);
     finish(agentEnd, 'success');
 
+    // Mark plan step as done
+    finish(stepStartAct, 'success', `${agentName}完成，输出 ${stepFinalContent.length} 字`);
+
+    // --- Plan step done activity ---
+    const stepDoneAct = newActivity(
+      'orchestrator',
+      'plan_step_done',
+      `第${stepIdx + 1}步完成: ${agentName}`,
+      {
+        paradigm: 'Plan-and-Execute' as AgentParadigm,
+        planStep: stepIdx,
+        planTotal: steps.length,
+        detail: `输出 ${stepFinalContent.length} 字`,
+      }
+    );
+    emit(stepDoneAct);
+    finish(stepDoneAct, 'success');
+
     // --- Collect this step's activities and fire onStepComplete ---
     const stepActivities = activities.slice(stepActivitiesStart);
     callbacks.onStepComplete?.({
@@ -1322,12 +1375,32 @@ export async function streamBrowserLLMMultiStep(
         if (rePlanResult.shouldReplan && rePlanResult.newSteps) {
           // Replace remaining steps with re-planned steps
           const oldRemaining = steps.length - stepIdx - 1;
+
+          // Emit replan activity
+          const replanAct = newActivity(
+            'orchestrator',
+            'plan_replan',
+            `总控调整计划：${rePlanResult.reason.slice(0, 60)}`,
+            {
+              paradigm: 'Plan-and-Execute' as AgentParadigm,
+              planStep: stepIdx,
+              planTotal: steps.length,
+              detail: `原因: ${rePlanResult.reason}\n\n原计划剩余 ${oldRemaining} 步，新计划 ${rePlanResult.newSteps.length} 步:\n` +
+                rePlanResult.newSteps.map((s, i) =>
+                  `${i + 1}. ${AGENT_NAMES[s.agent]}（${s.mode}）: ${s.task}`
+                ).join('\n'),
+              isReplanned: true,
+            }
+          );
+          emit(replanAct);
+
           steps.splice(stepIdx + 1, oldRemaining, ...rePlanResult.newSteps);
           finish(
             transAct,
             'success',
             `总控决定调整计划：${rePlanResult.reason}\n新计划：${steps.slice(stepIdx + 1).map((s, i) => `${i + 1}.${AGENT_NAMES[s.agent]}(${s.mode})`).join(' → ')}`
           );
+          finish(replanAct, 'success');
         } else {
           finish(
             transAct,
