@@ -721,12 +721,30 @@
 
 /* ReAct iteration card styles */
 .react-turn {
-  border-radius: 8px;
+  border-radius: 2px;
   transition: background-color 0.15s ease;
 }
 
 .react-turn:hover {
   background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Pixel card — retro game panel with hard shadow */
+.pixel-card {
+  position: relative;
+  box-shadow:
+    2px 2px 0 0 rgba(0,0,0,0.3),
+    inset 0 0 0 1px rgba(255,255,255,0.03);
+  image-rendering: pixelated;
+}
+
+/* Pixel mini icon — crisp pixel art */
+.pixel-mini-icon {
+  display: inline-block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  vertical-align: middle;
+  flex-shrink: 0;
 }
 
 /* Scrollbar for observation/detail panels */
@@ -736,5 +754,4 @@
 
 .react-turn .max-h-48::-webkit-scrollbar-thumb {
   background-color: #3a3f52;
-  border-radius: 9999px;
 }

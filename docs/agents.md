@@ -111,7 +111,9 @@ CodeMentor 采用 **Hierarchical Delegation（层级委派）** 模式的多 Age
 
 ## Agent 活动类型（AgentActivity）
 
-每个 Agent 在执行过程中产生的活动通过 `AgentActivity` 结构记录，实时推送到 UI：
+每个 Agent 在执行过程中产生的活动通过 `AgentActivity` 结构记录，实时推送到 UI。活动类型按范式分组：
+
+### 通用活动
 
 | type | 含义 | 触发时机 |
 |---|---|---|
@@ -119,38 +121,99 @@ CodeMentor 采用 **Hierarchical Delegation（层级委派）** 模式的多 Age
 | `agent_end` | Agent 完成 | Agent 任务结束 |
 | `skill_load` | 加载教学技能 | Agent 加载对应的方法论技能 |
 | `knowledge_read` | 读取知识库 | 查询 topics.ts 中的知识点 |
-| `tool_call` | 调用工具 | 调用 analyze_code / learning_path 等 |
-| `tool_result` | 工具返回 | 工具执行完成，记录结果摘要 |
-| `thinking` | 思考中 | LLM 推理过程中（流式输出时） |
-| `validate` | 验证/校验 | 出题官校验题目质量 |
+| `tool_call` | 调用工具 | 直接工具调用（非ReAct路径） |
+| `tool_result` | 工具返回 | 工具执行完成 |
+| `thinking` | 通用思考 | 未归类到范式活动的推理过程 |
 | `error` | 错误/降级 | 发生错误或触发降级 |
+
+### Plan-and-Execute 编排活动（总控/规划师）
+
+| type | 含义 |
+|---|---|
+| `plan_created` | 总控生成执行计划 |
+| `plan_assess` | 评估学习者现状 |
+| `plan_structure` | 组织输出结构 |
+| `plan_step_start` | 计划步骤开始执行 |
+| `plan_step_done` | 计划步骤完成 |
+| `plan_replan` | 总控重新规划 |
+
+### ReAct 推理-行动活动（讲师工具调用）
+
+| type | 含义 |
+|---|---|
+| `react_thought` | Thought：推理思考 |
+| `react_action` | Action：决定调用工具（含 toolName/toolArgs） |
+| `react_observation` | Observation：工具返回结果 |
+
+### CoT 教学思维链活动（讲师）
+
+| type | 含义 |
+|---|---|
+| `cot_diagnose` | 诊断学生卡点和理解水平 |
+| `cot_design` | 设计苏格拉底式引导路径 |
+| `cot_present` | 组织教学呈现内容 |
+
+### Reflexion 反思评估活动（考官）
+
+| type | 含义 |
+|---|---|
+| `reflexion_evaluate` | 评估提交代码正确性 |
+| `reflexion_critique` | 自我批判/反思评估质量 |
+| `reflexion_verdict` | 给出判定/分数（含 score 0-100） |
+| `reflexion_feedback` | 输出改进建议 |
+
+### Plan-and-Execute+Reflexion 出题活动（出题官）
+
+| type | 含义 |
+|---|---|
+| `pe_plan` | 规划题目参数（难度、类型、约束） |
+| `pe_generate` | 生成题目内容 |
+| `pe_validate` | 验证题目质量 |
+| `pe_reflect` | 反思验证失败原因 |
+| `pe_repair` | 修复题目缺陷 |
+| `pe_complete` | 题目通过验证 |
 
 活动结构：
 ```typescript
-type AgentParadigm = 'ReAct' | 'Plan-and-Solve' | 'Reflection' | 'Socratic';
+type AgentParadigm = 'Plan-and-Execute' | 'ReAct+CoT' | 'Plan-and-Execute+Reflexion' | 'Reflexion';
 
 interface AgentActivity {
-  id: string;           // 唯一 ID
-  agent: AgentRole;     // 哪个 Agent
+  id: string;
+  agent: AgentRole;
   type: AgentActivityType;
-  label: string;        // 简短描述，如"加载苏格拉底教学法"
-  detail?: string;      // 详细信息（可展开查看）
+  label: string;
+  detail?: string;
   status?: 'running' | 'success' | 'warning' | 'error';
-  durationMs?: number;  // 耗时（完成后）
+  durationMs?: number;
   timestamp: number;
-  paradigm?: AgentParadigm;  // 该 Agent 使用的推理范式
+  paradigm?: AgentParadigm;
+  reactTurn?: number;        // ReAct 轮次
+  reflexionTurn?: number;    // Reflexion 轮次
+  cotStep?: 'diagnose' | 'design' | 'present';  // CoT 步骤
+  peIteration?: number;      // PE+R 迭代次数
+  score?: number;            // 评分 0-100
+  planStep?: number;         // 计划步骤序号
+  planTotal?: number;        // 计划总步数
+  toolName?: string;         // 工具名
+  toolArgs?: string;         // 工具参数摘要
 }
 ```
 
-### ThinkingChain 思维链组件
+### ThinkingChain 思维链UI组件（像素游戏风格）
 
-思维链以内联方式展示在对话消息中，用户可点击展开/折叠查看每个 Agent 的完整思考过程：
+思维链以内联方式展示在对话消息中，采用**像素游戏风格**设计：
 
-- **实时流式更新**：thinking 类型活动在 LLM 推理时实时追加内容
-- **按 Agent 分组**：不同 Agent 的思维链用不同颜色标签区分（总控紫色、讲师绿色、出题官黄色、考官红色、规划师橙色）
-- **范式标签**：标签显示 Agent 名称和使用的范式（如"讲师·Socratic"），鼠标悬停显示范式说明
-- **自动折叠**：生成完成后默认折叠，点击可展开查看完整推理过程
-- **预览截断**：折叠时只显示最后 500 字符的推理预览，避免占用过多空间
+- **范式专属可视化**：每个 Agent 使用对应范式的专属思维链组件，不再全部显示为 ReAct：
+  - **总控/规划师**：`PlanTimeline` 像素时间线，显示评估→规划→执行进度条
+  - **讲师**：`CoTChain`（诊断→设计→呈现三步像素管道）+ `ReActIteration`（工具调用轮次，可展开查看 Thought/Action/Observation）
+  - **考官**：`ReflexionChain`（评估→反思→判定→反馈四步像素流程，含像素分数条）
+  - **出题官**：`PEChain`（规划→生成→验证→反思→修复→完成像素管道，支持多轮修复迭代）
+- **像素图标系统**：`PixelIcon` 组件为每种活动类型绘制 8x8 像素艺术图标（放大镜、齿轮、天平、菱形、扳手、星星等）
+- **像素卡片样式**：`.pixel-card` 类提供硬阴影像素风格面板，`.pixel-mini-icon` 提供锐利像素渲染
+- **工具调用标注**：工具调用显示像素齿轮图标 + 蓝色工具名标签 + 参数预览
+- **实时流式更新**：运行中的步骤显示脉冲动画和 ▶ 播放指示器
+- **可展开/折叠**：范式链默认折叠显示摘要进度，点击展开查看详细步骤
+- **按 Agent 分组**：不同 Agent 用不同颜色的像素方块标签区分
 
 ## 流式输出流程
 
@@ -192,7 +255,13 @@ streamBrowserLLM() 开始
 
 ### ReAct 引擎：LLM 驱动的工具调用
 
-CodeMentor 的所有 Agent 均采用 **ReAct（Reasoning + Acting）** 模式。LLM 作为"大脑"自主决定何时调用工具、调用哪个工具、如何利用工具返回的结果。代码只负责提供工具目录和执行 LLM 选择的动作。
+CodeMentor 的所有 Agent 使用 **ReAct（Reasoning + Acting）** 作为底层工具调用引擎。LLM 作为"大脑"自主决定何时调用工具、调用哪个工具、如何利用工具返回的结果。代码只负责提供工具目录和执行 LLM 选择的动作。
+
+**注意**：ReAct 是工具调用层（engine），而非唯一的认知范式。各 Agent 在 ReAct 引擎之上运行自己的推理范式，并在 UI 中展示对应的范式专属思维链：
+- 讲师在 ReAct 循环结束后展示 CoT 教学思维链
+- 考官在 ReAct 循环（分析代码）后展示 Reflexion 反思评估链
+- 出题官在 ReAct 循环后展示 PE+R 生成验证修复链
+- 非ReAct范式的Agent在UI中**不显示独立的ReAct卡片**，工具调用以内联像素标签形式展示在系统活动中
 
 #### 架构对比
 
@@ -434,7 +503,7 @@ if (step.usePrevContext && prevOutput) {
 
 ## 工具调用方式
 
-所有 Agent 均采用 ReAct 模式（见上方"ReAct 引擎"章节）。代码不再根据模式自动调用工具，而是将工具目录声明在 system prompt 中，由 LLM 自主决定何时调用。
+所有 Agent 使用 ReAct 作为底层工具调用引擎（见上方"ReAct 引擎"章节），但各 Agent 在 ReAct 之上运行自己的认知范式。代码不再根据模式自动调用工具，而是将工具目录声明在 system prompt 中，由 LLM 自主决定何时调用。
 
 | 模式 | LLM 可用工具 | 说明 |
 |---|---|---|

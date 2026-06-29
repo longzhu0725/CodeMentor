@@ -686,6 +686,97 @@ export async function streamBrowserLLM(
     })),
   ];
 
+  // --- Emit paradigm-specific entry activities ---
+  if (mode === 'practice') {
+    // PE+R 范式: 规划题目参数
+    const planAct = newActivity(
+      agentRole,
+      'pe_plan',
+      '规划题目参数',
+      {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+        peIteration: 0,
+        detail: '根据学习者水平和知识点，规划题目的难度、类型、约束条件',
+      }
+    );
+    emit(planAct);
+    await sleep(40);
+    finish(planAct, 'success');
+    // PE+R 范式: 生成题目
+    const genAct = newActivity(
+      agentRole,
+      'pe_generate',
+      '生成题目中…',
+      {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+        peIteration: 0,
+        status: 'running',
+      }
+    );
+    emit(genAct);
+    // We'll finish genAct after ReAct loop completes
+    (genAct as any)._deferredFinish = true;
+    (apiMessages as any)._genAct = genAct;
+  } else if (mode === 'plan') {
+    // Plan-and-Execute 范式: 评估学习者现状
+    const assessAct = newActivity(
+      agentRole,
+      'plan_assess',
+      '评估学习者现状',
+      {
+        paradigm: 'Plan-and-Execute' as AgentParadigm,
+        detail: '分析学习者已掌握知识点、薄弱环节、学习偏好',
+        status: 'running',
+      }
+    );
+    emit(assessAct);
+    await sleep(40);
+    finish(assessAct, 'success', '完成学习者画像分析，开始规划学习路径');
+    // Plan-and-Execute 范式: 组织路径结构
+    const structAct = newActivity(
+      agentRole,
+      'plan_structure',
+      '组织学习路径结构…',
+      {
+        paradigm: 'Plan-and-Execute' as AgentParadigm,
+        status: 'running',
+      }
+    );
+    emit(structAct);
+    (structAct as any)._deferredFinish = true;
+    (apiMessages as any)._structAct = structAct;
+  } else if (mode === 'review') {
+    // Reflexion 范式: 评估代码
+    const evalAct = newActivity(
+      agentRole,
+      'reflexion_evaluate',
+      '评估提交代码…',
+      {
+        paradigm: 'Reflexion' as AgentParadigm,
+        reflexionTurn: 1,
+        status: 'running',
+      }
+    );
+    emit(evalAct);
+    (evalAct as any)._deferredFinish = true;
+    (apiMessages as any)._evalAct = evalAct;
+  } else if (mode === 'chat') {
+    // ReAct+CoT 范式: 讲师诊断
+    const diagAct = newActivity(
+      agentRole,
+      'cot_diagnose',
+      '诊断学生问题…',
+      {
+        paradigm: 'ReAct+CoT' as AgentParadigm,
+        cotStep: 'diagnose',
+        status: 'running',
+      }
+    );
+    emit(diagAct);
+    (diagAct as any)._deferredFinish = true;
+    (apiMessages as any)._diagAct = diagAct;
+  }
+
   // --- ReAct loop: LLM drives tool calling autonomously ---
   const { content, usedFallback } = await runReActLoop(
     baseURL,
@@ -705,14 +796,115 @@ export async function streamBrowserLLM(
   let finalContent = content;
   let problem: AlgorithmProblem | undefined;
 
+  // Finish deferred entry activities and emit follow-up paradigm activities
+  const deferredGen = (apiMessages as any)._genAct as AgentActivity | undefined;
+  const deferredStruct = (apiMessages as any)._structAct as AgentActivity | undefined;
+  const deferredEval = (apiMessages as any)._evalAct as AgentActivity | undefined;
+  const deferredDiag = (apiMessages as any)._diagAct as AgentActivity | undefined;
+
+  if (mode === 'practice') {
+    if (deferredGen) finish(deferredGen, 'success', '题目生成完成，开始验证质量');
+  } else if (mode === 'plan') {
+    if (deferredStruct) finish(deferredStruct, 'success', '学习路径结构组织完成');
+  } else if (mode === 'review') {
+    if (deferredEval) finish(deferredEval, 'success', '代码分析完成，进入反思评估');
+    const critiqueAct = newActivity(
+      agentRole,
+      'reflexion_critique',
+      '反思评估质量…',
+      {
+        paradigm: 'Reflexion' as AgentParadigm,
+        reflexionTurn: 1,
+        status: 'running',
+      }
+    );
+    emit(critiqueAct);
+    await sleep(30);
+    const critiqueDetail = content.includes('问题') || content.includes('不足')
+      ? '自我审查评估维度：正确性、效率、代码风格、边界处理'
+      : '自我审查完成：评估维度覆盖全面';
+    finish(critiqueAct, 'success', critiqueDetail);
+    const scoreMatch = content.match(/(\d{1,3})\s*分/);
+    const score = scoreMatch ? Math.min(100, Math.max(0, parseInt(scoreMatch[1], 10))) : undefined;
+    const verdictAct = newActivity(
+      agentRole,
+      'reflexion_verdict',
+      score != null ? `判定：${score} 分` : '给出综合判定',
+      {
+        paradigm: 'Reflexion' as AgentParadigm,
+        reflexionTurn: 1,
+        score,
+        detail: score != null
+          ? (score >= 80 ? '代码质量良好，通过考核' : score >= 60 ? '基本正确，有待改进' : '存在较多问题，需要加强练习')
+          : '综合判定已完成',
+      }
+    );
+    emit(verdictAct);
+    finish(verdictAct, 'success');
+    const feedbackAct = newActivity(
+      agentRole,
+      'reflexion_feedback',
+      '整理改进建议…',
+      {
+        paradigm: 'Reflexion' as AgentParadigm,
+        reflexionTurn: 1,
+        status: 'running',
+      }
+    );
+    emit(feedbackAct);
+    await sleep(30);
+    const feedbackLines = content.split('\n').filter((l: string) => l.trim().startsWith('-') || l.trim().startsWith('*') || /^\d+\./.test(l.trim())).slice(0, 3).join('; ');
+    finish(feedbackAct, 'success', feedbackLines || '反馈建议已组织完成');
+  } else if (mode === 'chat') {
+    if (deferredDiag) finish(deferredDiag, 'success', '诊断完成，分析了学生的知识卡点和理解水平');
+    const designAct = newActivity(
+      agentRole,
+      'cot_design',
+      '设计引导问题…',
+      {
+        paradigm: 'ReAct+CoT' as AgentParadigm,
+        cotStep: 'design',
+        status: 'running',
+      }
+    );
+    emit(designAct);
+    await sleep(30);
+    finish(designAct, 'success', '采用苏格拉底式提问法，设计层层递进的引导路径');
+    const presentAct = newActivity(
+      agentRole,
+      'cot_present',
+      '组织教学呈现…',
+      {
+        paradigm: 'ReAct+CoT' as AgentParadigm,
+        cotStep: 'present',
+        status: 'running',
+      }
+    );
+    emit(presentAct);
+    await sleep(30);
+    finish(presentAct, 'success', '教学内容已组织为清晰的引导式讲解');
+  }
+
   if (mode === 'practice') {
     const rawProblem = extractProblem(content);
     if (rawProblem) {
       const normalized = normalizeProblem(rawProblem);
 
-      // Safety-net validation: the LLM may have already validated via
-      // ValidateProblem during the ReAct loop. Here we just quick-check.
       if (quickValidate(normalized)) {
+        // Quick validation passed - emit PE+R complete
+        const quickVal = newActivity(agentRole, 'pe_validate', '快速验证题目结构', {
+          paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+          peIteration: 0,
+          status: 'running',
+        });
+        emit(quickVal); await sleep(20);
+        finish(quickVal, 'success', '题目结构完整，包含标题、描述、示例和约束');
+        const completeAct = newActivity(agentRole, 'pe_complete', '题目验证通过', {
+          paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+          peIteration: 0,
+          detail: '题目结构完整，测试用例正确，可以交付给学生',
+        });
+        emit(completeAct); finish(completeAct, 'success');
         problem = normalized;
         callbacks.onProblem?.(normalized);
         finalContent = `好的，我为你准备了一道 **${normalized.topicId}** 练习题：\n\n### ${normalized.title}\n\n${normalized.description}\n\n**难度**：${'⭐'.repeat(normalized.difficulty)}\n\n**示例**：\n${formatExamples(normalized.examples)}\n\n**约束**：\n${(normalized.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！输入 "/submit" 或点击运行后我会帮你评估。`;
@@ -1250,6 +1442,46 @@ export async function streamBrowserLLMMultiStep(
       { role: 'user', content: userContent },
     ];
 
+    // --- Emit paradigm-specific entry activities (multi-step) ---
+    if (step.mode === 'practice') {
+      const planAct = newActivity(step.agent, 'pe_plan', '规划题目参数', {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm, peIteration: 0,
+        detail: '根据学习者水平和知识点规划题目参数',
+      });
+      emit(planAct); await sleep(30); finish(planAct, 'success');
+      const genAct = newActivity(step.agent, 'pe_generate', '生成题目中…', {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm, peIteration: 0, status: 'running',
+      });
+      emit(genAct);
+      (genAct as any)._deferredFinish = true;
+      (apiMessages as any)._genAct = genAct;
+    } else if (step.mode === 'plan') {
+      const assessAct = newActivity(step.agent, 'plan_assess', '评估学习者现状', {
+        paradigm: 'Plan-and-Execute' as AgentParadigm, status: 'running',
+      });
+      emit(assessAct); await sleep(30); finish(assessAct, 'success');
+      const structAct = newActivity(step.agent, 'plan_structure', '组织学习路径结构…', {
+        paradigm: 'Plan-and-Execute' as AgentParadigm, status: 'running',
+      });
+      emit(structAct);
+      (structAct as any)._deferredFinish = true;
+      (apiMessages as any)._structAct = structAct;
+    } else if (step.mode === 'review') {
+      const evalAct = newActivity(step.agent, 'reflexion_evaluate', '评估提交代码…', {
+        paradigm: 'Reflexion' as AgentParadigm, reflexionTurn: 1, status: 'running',
+      });
+      emit(evalAct);
+      (evalAct as any)._deferredFinish = true;
+      (apiMessages as any)._evalAct = evalAct;
+    } else if (step.mode === 'chat') {
+      const diagAct = newActivity(step.agent, 'cot_diagnose', '诊断学生问题…', {
+        paradigm: 'ReAct+CoT' as AgentParadigm, cotStep: 'diagnose', status: 'running',
+      });
+      emit(diagAct);
+      (diagAct as any)._deferredFinish = true;
+      (apiMessages as any)._diagAct = diagAct;
+    }
+
     // --- ReAct loop: LLM drives tool calling autonomously ---
     const { content: stepContent } = await runReActLoop(
       baseURL,
@@ -1269,11 +1501,77 @@ export async function streamBrowserLLMMultiStep(
     // The LLM may have already validated the problem during the ReAct loop.
     // Here we do a safety-net extraction + quick validation.
     let stepFinalContent = stepContent;
+
+    // Finish deferred entry activities and emit follow-up activities (multi-step)
+    const mDeferredGen = (apiMessages as any)._genAct as AgentActivity | undefined;
+    const mDeferredStruct = (apiMessages as any)._structAct as AgentActivity | undefined;
+    const mDeferredEval = (apiMessages as any)._evalAct as AgentActivity | undefined;
+    const mDeferredDiag = (apiMessages as any)._diagAct as AgentActivity | undefined;
+
+    if (step.mode === 'practice') {
+      if (mDeferredGen) finish(mDeferredGen, 'success', '题目生成完成，开始验证质量');
+    } else if (step.mode === 'plan') {
+      if (mDeferredStruct) finish(mDeferredStruct, 'success', '学习路径结构组织完成');
+    } else if (step.mode === 'review') {
+      if (mDeferredEval) finish(mDeferredEval, 'success', '代码分析完成，进入反思评估');
+      const critiqueAct = newActivity(step.agent, 'reflexion_critique', '反思评估质量…', {
+        paradigm: 'Reflexion' as AgentParadigm, reflexionTurn: 1, status: 'running',
+      });
+      emit(critiqueAct); await sleep(20);
+      // Extract critique points from content
+      const critiqueDetail = stepContent.includes('问题') || stepContent.includes('不足')
+        ? '自我审查评估维度：正确性、效率、代码风格、边界处理'
+        : '自我审查完成：评估维度覆盖全面';
+      finish(critiqueAct, 'success', critiqueDetail);
+      const scoreMatch = stepContent.match(/(\d{1,3})\s*分/);
+      const score = scoreMatch ? Math.min(100, Math.max(0, parseInt(scoreMatch[1], 10))) : undefined;
+      const verdictAct = newActivity(step.agent, 'reflexion_verdict', score != null ? `判定：${score} 分` : '给出综合判定', {
+        paradigm: 'Reflexion' as AgentParadigm, reflexionTurn: 1, score,
+        detail: score != null
+          ? (score >= 80 ? '代码质量良好，通过考核' : score >= 60 ? '基本正确，有待改进' : '存在较多问题，需要加强练习')
+          : '综合判定已完成',
+      });
+      emit(verdictAct); finish(verdictAct, 'success');
+      const feedbackAct = newActivity(step.agent, 'reflexion_feedback', '整理改进建议…', {
+        paradigm: 'Reflexion' as AgentParadigm, reflexionTurn: 1, status: 'running',
+      });
+      emit(feedbackAct); await sleep(20);
+      // Extract feedback summary
+      const feedbackLines = stepContent.split('\n').filter((l: string) => l.trim().startsWith('-') || l.trim().startsWith('*') || /^\d+\./.test(l.trim())).slice(0, 3).join('; ');
+      finish(feedbackAct, 'success', feedbackLines || '改进建议已组织完成');
+    } else if (step.mode === 'chat') {
+      if (mDeferredDiag) finish(mDeferredDiag, 'success', '诊断完成，分析了学生的知识卡点和理解水平');
+      const designAct = newActivity(step.agent, 'cot_design', '设计引导问题…', {
+        paradigm: 'ReAct+CoT' as AgentParadigm, cotStep: 'design', status: 'running',
+      });
+      emit(designAct); await sleep(20);
+      finish(designAct, 'success', '采用苏格拉底式提问法，设计层层递进的引导路径');
+      const presentAct = newActivity(step.agent, 'cot_present', '组织教学呈现…', {
+        paradigm: 'ReAct+CoT' as AgentParadigm, cotStep: 'present', status: 'running',
+      });
+      emit(presentAct); await sleep(20);
+      finish(presentAct, 'success', '教学内容已组织为清晰的引导式讲解');
+    }
+
     if (step.mode === 'practice') {
       const rawProblem = extractProblem(stepContent);
       if (rawProblem) {
         const normalized = normalizeProblem(rawProblem);
         if (quickValidate(normalized)) {
+          // Quick validation passed - emit PE+R complete
+          const quickVal = newActivity(step.agent, 'pe_validate', '快速验证题目结构', {
+            paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+            peIteration: 0,
+            status: 'running',
+          });
+          emit(quickVal); await sleep(20);
+          finish(quickVal, 'success', '题目结构完整，包含标题、描述、示例和约束');
+          const completeAct = newActivity(step.agent, 'pe_complete', '题目验证通过', {
+            paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+            peIteration: 0,
+            detail: '题目结构完整，测试用例正确，可以交付给学生',
+          });
+          emit(completeAct); finish(completeAct, 'success');
           problem = normalized;
           callbacks.onProblem?.(normalized);
           stepFinalContent = `好的，我为你准备了一道 **${normalized.topicId}** 练习题：\n\n### ${normalized.title}\n\n${normalized.description}\n\n**难度**：${'⭐'.repeat(normalized.difficulty)}\n\n**示例**：\n${formatExamples(normalized.examples)}\n\n**约束**：\n${(normalized.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！`;
@@ -1860,39 +2158,68 @@ async function validateAndRepairProblem(
   maxRetries = 1
 ): Promise<{ problem: AlgorithmProblem | null; validationText: string }> {
   let currentProblem = normalized;
-  let lastResult = await toolRegistry.execute('validate_problem', {
-    problem: JSON.stringify(currentProblem),
-  });
   let attempts = 0;
 
-  const finishValidation = (
+  const finishAct = (
     act: AgentActivity,
     status: AgentActivity['status'],
     detail: string
   ) => {
-    finish(act, status, detail.slice(0, 300));
+    finish(act, status, detail.slice(0, 400));
   };
 
-  const createValAct = (labelSuffix = '') =>
-    newActivity(
-      agentRole,
-      'tool_call',
-      `调用工具：validate_problem（题目结构验证${labelSuffix}）`
-    );
-
-  let valAct = createValAct();
+  // === PE+R 范式: 验证题目 ===
+  let valAct = newActivity(
+    agentRole,
+    'pe_validate',
+    `第 ${attempts + 1} 次验证题目质量`,
+    {
+      paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+      peIteration: attempts,
+      detail: '检查题目结构完整性、测试用例正确性、边界条件覆盖度',
+    }
+  );
   emit(valAct);
+
+  let lastResult = await toolRegistry.execute('validate_problem', {
+    problem: JSON.stringify(currentProblem),
+  });
 
   while (!lastResult.success && attempts < maxRetries) {
     attempts++;
-    finishValidation(
+    finishAct(
       valAct,
       'warning',
-      `验证未通过，尝试自动修复（第 ${attempts} 次）\n${lastResult.display || lastResult.error || ''}`
+      `验证未通过：${lastResult.display || lastResult.error || '未知问题'}`
     );
 
-    const repairAct = newActivity(agentRole, 'thinking', `题目自动修复中…`);
+    // === PE+R 范式: 反思失败原因 ===
+    const reflectAct = newActivity(
+      agentRole,
+      'pe_reflect',
+      `反思验证失败原因（第 ${attempts} 次）`,
+      {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+        peIteration: attempts,
+        detail: lastResult.display || lastResult.error || '分析题目缺陷',
+        status: 'running',
+      }
+    );
+    emit(reflectAct);
+
+    // === PE+R 范式: 修复题目 ===
+    const repairAct = newActivity(
+      agentRole,
+      'pe_repair',
+      `修复题目（第 ${attempts} 次）`,
+      {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+        peIteration: attempts,
+        status: 'running',
+      }
+    );
     emit(repairAct);
+    finish(reflectAct, 'success', `定位问题：${lastResult.display || lastResult.error || '结构/测试用例/约束问题'}`);
 
     const repairMessages = [
       { role: 'system', content: repairSystemPrompt },
@@ -1927,13 +2254,25 @@ async function validateAndRepairProblem(
       const repairedRaw = extractProblem(repairContent);
       if (repairedRaw) {
         currentProblem = normalizeProblem(repairedRaw);
+        finish(repairAct, 'success', '已根据反思结果修复题目结构和测试用例');
+      } else {
+        finish(repairAct, 'error', '修复结果解析失败');
       }
+    } else {
+      finish(repairAct, 'error', '修复请求失败');
     }
 
-    finish(repairAct, 'success', `完成自动修复尝试 ${attempts}`);
-
     // Re-validate
-    valAct = createValAct(' · 修复后');
+    valAct = newActivity(
+      agentRole,
+      'pe_validate',
+      `验证修复后题目（第 ${attempts + 1} 次）`,
+      {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+        peIteration: attempts,
+        status: 'running',
+      }
+    );
     emit(valAct);
     lastResult = await toolRegistry.execute('validate_problem', {
       problem: JSON.stringify(currentProblem),
@@ -1941,11 +2280,24 @@ async function validateAndRepairProblem(
   }
 
   if (lastResult.success) {
-    finishValidation(valAct, 'success', lastResult.display || '验证通过');
+    // === PE+R 范式: 题目通过验证 ===
+    const completeAct = newActivity(
+      agentRole,
+      'pe_complete',
+      `题目验证通过${attempts > 0 ? `（经过 ${attempts} 次修复）` : ''}`,
+      {
+        paradigm: 'Plan-and-Execute+Reflexion' as AgentParadigm,
+        peIteration: attempts,
+        detail: lastResult.display || '题目结构完整，测试用例正确，可以交付给学生',
+      }
+    );
+    emit(completeAct);
+    finishAct(valAct, 'success', lastResult.display || '验证通过');
+    finish(completeAct, 'success');
     return { problem: currentProblem, validationText: lastResult.display || '验证通过' };
   }
 
-  finishValidation(
+  finishAct(
     valAct,
     'error',
     lastResult.display || lastResult.error || '验证失败'

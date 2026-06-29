@@ -28,15 +28,37 @@ export type AgentActivityType =
   | 'knowledge_read'   // 读取知识库内容
   | 'tool_call'        // 调用工具
   | 'tool_result'      // 工具返回结果
-  | 'thinking'         // 思考/推理过程
+  | 'thinking'         // 通用思考/推理过程
   | 'validate'         // 验证/校验步骤
+  // === Plan-and-Execute 编排层（总控/规划师） ===
   | 'plan_created'     // 总控生成执行计划
   | 'plan_step_start'  // 计划步骤开始执行
   | 'plan_step_done'   // 计划步骤完成
   | 'plan_replan'      // 总控重新规划
+  | 'plan_assess'      // 评估现状（规划师评估学习者状态）
+  | 'plan_structure'   // 组织输出结构
+  // === ReAct 推理-行动循环（讲师） ===
   | 'react_thought'    // ReAct: Thought（推理思考）
   | 'react_action'     // ReAct: Action（决定调用工具）
   | 'react_observation'// ReAct: Observation（工具返回观察）
+  // === CoT 思维链教学推理（讲师） ===
+  | 'cot_diagnose'     // CoT: 诊断学生卡点
+  | 'cot_design'       // CoT: 设计引导问题
+  | 'cot_present'      // CoT: 组织教学呈现
+  // === Reflexion 反思迭代（考官） ===
+  | 'reflexion_evaluate'   // Reflexion: 评估提交内容
+  | 'reflexion_critique'   // Reflexion: 自我批判/反思评估质量
+  | 'reflexion_verdict'    // Reflexion: 给出判定/分数
+  | 'reflexion_feedback'   // Reflexion: 输出改进反馈
+  | 'reflexion_iteration'  // Reflexion: 进入下一轮反思迭代
+  // === Plan-and-Execute+Reflexion 生成-验证-修复（出题官） ===
+  | 'pe_plan'          // PE+R: 规划题目参数
+  | 'pe_generate'      // PE+R: 生成题目
+  | 'pe_validate'      // PE+R: 验证题目质量
+  | 'pe_reflect'       // PE+R: 反思失败原因
+  | 'pe_repair'        // PE+R: 修复题目
+  | 'pe_complete'      // PE+R: 题目通过验证
+  // === 系统 ===
   | 'stream_chunk'     // 流式输出片段（内部使用，不展示给用户）
   | 'error';           // 错误/降级
 
@@ -61,6 +83,14 @@ export interface AgentActivity {
   paradigm?: AgentParadigm;
   /** ReAct turn number (groups thought+action+observation into one iteration) */
   reactTurn?: number;
+  /** Reflexion iteration number (groups evaluate+critique+verdict into one round) */
+  reflexionTurn?: number;
+  /** CoT step sequence (diagnose→design→present) */
+  cotStep?: 'diagnose' | 'design' | 'present';
+  /** PE+R iteration number (plan→generate→validate→reflect→repair loops) */
+  peIteration?: number;
+  /** Score/rating for verdict activities (0-100) */
+  score?: number;
   /** Plan step index (for multi-step orchestration visualization) */
   planStep?: number;
   /** Total number of plan steps (for progress display) */
