@@ -83,12 +83,23 @@ function getActivityColor(act: AgentActivity): string {
 }
 
 // ============================================================
-// Lightweight Markdown renderer
+// Lightweight Markdown renderer (enhanced)
+// Supports: h1-h3, bold, italic, inline code, links, lists (ul/ol),
+// blockquotes, code blocks, tables, horizontal rules, Chinese-friendly line joining.
 // ============================================================
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** Render inline elements: **bold**, *italic*, `code`, [text](url) */
 function renderInline(text: string, keyBase: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const regex = /(\*\*([^*]+)\*\*|`([^`]+)`)/g;
+  // Order matters: code first, then bold, then italic, then link
+  const regex = /(```[\s\S]*?```|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|_([^_]+)_|\[([^\]]+)\]\(([^)]+)\))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
@@ -97,16 +108,45 @@ function renderInline(text: string, keyBase: string): React.ReactNode[] {
       nodes.push(text.slice(last, m.index));
     }
     if (m[2] !== undefined) {
-      nodes.push(
-        <strong key={`${keyBase}-s${i}`} className="md-strong">
-          {m[2]}
-        </strong>
-      );
-    } else if (m[3] !== undefined) {
+      // inline code `xxx`
       nodes.push(
         <code key={`${keyBase}-c${i}`} className="md-code">
-          {m[3]}
+          {m[2]}
         </code>
+      );
+    } else if (m[3] !== undefined) {
+      // **bold**
+      nodes.push(
+        <strong key={`${keyBase}-b${i}`} className="md-strong">
+          {m[3]}
+        </strong>
+      );
+    } else if (m[4] !== undefined) {
+      // *italic*
+      nodes.push(
+        <em key={`${keyBase}-i${i}`} className="md-em">
+          {m[4]}
+        </em>
+      );
+    } else if (m[5] !== undefined) {
+      // _italic_
+      nodes.push(
+        <em key={`${keyBase}-i2${i}`} className="md-em">
+          {m[5]}
+        </em>
+      );
+    } else if (m[6] !== undefined) {
+      // [text](url)
+      nodes.push(
+        <a
+          key={`${keyBase}-a${i}`}
+          href={m[7]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="md-link"
+        >
+          {m[6]}
+        </a>
       );
     }
     last = regex.lastIndex;
@@ -114,6 +154,74 @@ function renderInline(text: string, keyBase: string): React.ReactNode[] {
   }
   if (last < text.length) nodes.push(text.slice(last));
   return nodes;
+}
+
+/** Join consecutive text lines with smart spacing: no space between CJK chars */
+function smartJoin(lines: string[]): string {
+  return lines
+    .map((l) => l.trim())
+    .reduce((acc, line, idx) => {
+      if (idx === 0) return line;
+      if (!acc) return line;
+      if (!line) return acc + '\n';
+      const lastChar = acc[acc.length - 1];
+      const firstChar = line[0];
+      const isCJK = (ch: string) =>
+        /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch);
+      const needsSpace =
+        !isCJK(lastChar) && !isCJK(firstChar) && !/[.,;:!?，。；：！？、）】」』]/.test(lastChar);
+      return acc + (needsSpace ? ' ' : '') + line;
+    }, '');
+}
+
+/** Parse a GFM table block starting at lines[i]; returns {element, nextI} or null */
+function tryParseTable(
+  lines: string[],
+  i: number,
+  keyBase: string
+): { el: React.ReactNode; nextI: number } | null {
+  const isSep = (l: string) =>
+    /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(l);
+  const isRow = (l: string) => l.trim().startsWith('|') || l.includes('|');
+  if (!isRow(lines[i])) return null;
+  if (i + 1 >= lines.length || !isSep(lines[i + 1])) return null;
+
+  const splitRow = (l: string): string[] => {
+    let s = l.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    return s.split('|').map((c) => c.trim());
+  };
+
+  const header = splitRow(lines[i]);
+  let j = i + 2;
+  const rows: string[][] = [];
+  while (j < lines.length && isRow(lines[j]) && !isSep(lines[j])) {
+    rows.push(splitRow(lines[j]));
+    j++;
+  }
+
+  const el = (
+    <table key={`${keyBase}-t${i}`} className="md-table">
+      <thead>
+        <tr>
+          {header.map((h, hi) => (
+            <th key={hi}>{renderInline(h, `${keyBase}-th${i}-${hi}`)}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, ri) => (
+          <tr key={ri}>
+            {row.map((c, ci) => (
+              <td key={ci}>{renderInline(c, `${keyBase}-td${i}-${ri}-${ci}`)}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+  return { el, nextI: j };
 }
 
 function renderTextBlocks(text: string, keyBase: string): React.ReactNode[] {
@@ -124,8 +232,24 @@ function renderTextBlocks(text: string, keyBase: string): React.ReactNode[] {
 
   while (i < lines.length) {
     const line = lines[i];
+
+    // Horizontal rule
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      blocks.push(<hr key={`${keyBase}-hr${i}`} className="md-hr" />);
+      i++;
+      continue;
+    }
+
     if (!line.trim()) {
       i++;
+      continue;
+    }
+
+    // Table?
+    const tbl = tryParseTable(lines, i, keyBase);
+    if (tbl) {
+      blocks.push(tbl.el);
+      i = tbl.nextI;
       continue;
     }
 
@@ -150,11 +274,9 @@ function renderTextBlocks(text: string, keyBase: string): React.ReactNode[] {
       }
       blocks.push(
         <blockquote key={`${keyBase}-q${i}`} className="md-blockquote">
-          {quoteLines.map((l, li) => (
-            <p key={li} className="md-p">
-              {renderInline(l, `${keyBase}-ql${i}-${li}`)}
-            </p>
-          ))}
+          <p className="md-p">
+            {renderInline(smartJoin(quoteLines), `${keyBase}-qi${i}`)}
+          </p>
         </blockquote>
       );
       continue;
@@ -196,20 +318,24 @@ function renderTextBlocks(text: string, keyBase: string): React.ReactNode[] {
       continue;
     }
 
+    // Paragraph (collect until blank line or block start)
     const paraLines: string[] = [];
     while (
       i < lines.length &&
       lines[i].trim() &&
-      !/^(#{1,3}\s|>\s?|[-*]\s|\d+\.\s)/.test(lines[i])
+      !/^(#{1,3}\s|>\s?|[-*]\s|\d+\.\s|\s*[-*_]{3,}\s*$)/.test(lines[i]) &&
+      !tryParseTable(lines, i, 'p')
     ) {
       paraLines.push(lines[i]);
       i++;
     }
-    blocks.push(
-      <p key={`${keyBase}-p${i}`} className="md-p">
-        {renderInline(paraLines.join(' '), `${keyBase}-pi${i}`)}
-      </p>
-    );
+    if (paraLines.length > 0) {
+      blocks.push(
+        <p key={`${keyBase}-p${i}`} className="md-p">
+          {renderInline(smartJoin(paraLines), `${keyBase}-pi${i}`)}
+        </p>
+      );
+    }
   }
 
   return blocks;
@@ -222,6 +348,7 @@ function renderMarkdown(content: string): React.ReactNode {
   parts.forEach((part, idx) => {
     const key = `b${idx}`;
     if (idx % 2 === 1) {
+      // code block
       const trimmed = part.replace(/^\n/, '').replace(/\n$/, '');
       const langMatch = trimmed.match(/^([a-zA-Z0-9_+-]+)\n/);
       let lang = '';
@@ -242,6 +369,8 @@ function renderMarkdown(content: string): React.ReactNode {
       );
     } else if (part.trim()) {
       blocks.push(...renderTextBlocks(part, key));
+    } else if (part === '' && idx > 0 && idx < parts.length - 1) {
+      // keep empty parts between code blocks as-is
     }
   });
 
@@ -672,21 +801,21 @@ export function ChatPanel({
               message.role === 'assistant' && idx === visibleMessages.length - 1;
             return (
               <div key={idx} className="space-y-3">
-                <MessageBubble message={message} />
-                {/* Show attached thinking chain for completed assistant messages
-                    (not for the very last one if we're currently loading —
-                    the live ThinkingChain handles that). */}
+                {/* Show thinking chain ABOVE the assistant message (like Claude Code)
+                    so the reasoning is visible before reading the answer. */}
                 {message.role === 'assistant' &&
                   message.activities &&
                   message.activities.length > 0 &&
                   !(isLoading && isLastAssistant) && (
                     <ThinkingChain activities={message.activities} isLive={false} />
                   )}
+                <MessageBubble message={message} />
               </div>
             );
           })}
 
-          {/* Live thinking chain for current in-flight turn */}
+          {/* Live thinking chain for current in-flight turn — appears ABOVE the
+              streaming bubble so users see reasoning before/during the answer. */}
           {showLiveThinking && (
             <ThinkingChain activities={liveActivities} isLive={true} />
           )}

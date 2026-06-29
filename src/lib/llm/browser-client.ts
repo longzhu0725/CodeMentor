@@ -286,7 +286,8 @@ export async function streamBrowserLLM(
     settings.apiKey,
     apiMessages,
     mode,
-    callbacks
+    callbacks,
+    agentRole
   );
 
   finish(thinkAct, 'success', usedFallback ? '（使用非流式模式）' : undefined);
@@ -422,7 +423,8 @@ async function callLLMStreaming(
   apiKey: string,
   messages: Array<{ role: string; content: string }>,
   mode: string,
-  callbacks: StreamCallbacks
+  callbacks: StreamCallbacks,
+  agentRole: AgentRole = 'lecturer'
 ): Promise<{ content: string; usedFallback: boolean }> {
   const body: Record<string, unknown> = {
     model,
@@ -497,6 +499,9 @@ async function callLLMStreaming(
   }
 
   let fullContent = '';
+  let fullReasoning = '';
+  let reasoningActivity: AgentActivity | null = null;
+  const REASONING_PREVIEW_LIMIT = 800;
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -517,10 +522,52 @@ async function callLLMStreaming(
 
         try {
           const parsed = JSON.parse(data);
-          const delta = parsed.choices?.[0]?.delta?.content;
-          if (delta) {
-            fullContent += delta;
-            callbacks.onToken?.(delta);
+          const delta = parsed.choices?.[0]?.delta as Record<string, unknown> | undefined;
+          if (!delta) continue;
+
+          // Capture reasoning_content (e.g. DeepSeek-R1 / Volcengine reasoning models)
+          const reasoningDelta = delta.reasoning_content as string | undefined;
+          if (reasoningDelta) {
+            fullReasoning += reasoningDelta;
+            if (!reasoningActivity) {
+              reasoningActivity = newActivity(
+                agentRole,
+                'thinking',
+                '推理中…',
+                { detail: '' }
+              );
+              callbacks.onActivity?.(reasoningActivity);
+            }
+            const preview =
+              fullReasoning.length > REASONING_PREVIEW_LIMIT
+                ? '…' + fullReasoning.slice(-REASONING_PREVIEW_LIMIT)
+                : fullReasoning;
+            callbacks.onActivity?.({
+              ...reasoningActivity,
+              label: 'LLM 推理中…',
+              detail: preview,
+            });
+          }
+
+          const contentDelta = delta.content as string | undefined;
+          if (contentDelta) {
+            // First content token — finalize reasoning activity
+            if (reasoningActivity) {
+              const preview =
+                fullReasoning.length > REASONING_PREVIEW_LIMIT
+                  ? '…' + fullReasoning.slice(-REASONING_PREVIEW_LIMIT)
+                  : fullReasoning;
+              callbacks.onActivity?.(
+                finishActivity(
+                  { ...reasoningActivity, detail: preview },
+                  'success',
+                  `推理过程（${fullReasoning.length} 字）`
+                )
+              );
+              reasoningActivity = null;
+            }
+            fullContent += contentDelta;
+            callbacks.onToken?.(contentDelta);
           }
         } catch {
           // Skip malformed chunks
@@ -532,6 +579,21 @@ async function callLLMStreaming(
     if (!fullContent) {
       return { content: await callLLMNonStreaming(baseURL, model, apiKey, messages, mode), usedFallback: true };
     }
+  }
+
+  // If stream ended but reasoning was still in flight (no content arrived), finalize it
+  if (reasoningActivity) {
+    const preview =
+      fullReasoning.length > REASONING_PREVIEW_LIMIT
+        ? '…' + fullReasoning.slice(-REASONING_PREVIEW_LIMIT)
+        : fullReasoning;
+    callbacks.onActivity?.(
+      finishActivity(
+        { ...reasoningActivity, detail: preview },
+        fullContent ? 'success' : 'warning',
+        `推理过程（${fullReasoning.length} 字）`
+      )
+    );
   }
 
   return { content: fullContent, usedFallback };
