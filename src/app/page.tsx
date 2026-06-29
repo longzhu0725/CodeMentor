@@ -329,8 +329,7 @@ export default function Home() {
             messages={chat.messages}
             onSend={handleSend}
             isLoading={chat.isLoading}
-            agentTrail={chat.agentTrail}
-            activities={chat.activities}
+            liveActivities={chat.liveActivities}
             streamingContent={chat.streamingContent}
             streamingAgent={chat.streamingAgent}
           />

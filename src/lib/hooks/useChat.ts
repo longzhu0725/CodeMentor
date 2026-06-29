@@ -37,10 +37,8 @@ export interface UseChatReturn {
   appendMessage: (message: AgentMessage) => void;
   loadMessages: (msgs: AgentMessage[]) => void;
   isLoading: boolean;
-  /** @deprecated Use activities instead */
-  agentTrail: { agent: AgentRole; action: string; timestamp: number }[];
-  /** Real-time activity log for transparency */
-  activities: AgentActivity[];
+  /** Activities for the *current* in-flight turn (live-updating). */
+  liveActivities: AgentActivity[];
   /** Content being streamed in (empty string when not streaming) */
   streamingContent: string;
   /** Which agent is currently responding (for avatar/name during streaming) */
@@ -111,7 +109,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   const [messages, setMessages] = useState<AgentMessage[]>([WELCOME_MESSAGE]);
   const [isLoading, setIsLoading] = useState(false);
-  const [activities, setActivities] = useState<AgentActivity[]>([]);
+  const [liveActivities, setLiveActivities] = useState<AgentActivity[]>([]);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingAgent, setStreamingAgent] = useState<AgentRole | null>(null);
   const [currentProblem, setCurrentProblem] = useState<AlgorithmProblem | null>(
@@ -143,7 +141,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       const nextMessages = [...messagesRef.current, userMessage];
       setMessages(nextMessages);
       setIsLoading(true);
-      setActivities([]);
+      setLiveActivities([]);
       setStreamingContent('');
       setStreamingAgent(modeToAgent(mode));
 
@@ -160,9 +158,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         },
       };
 
-      // Buffer for streaming content
+      // Buffer for streaming content & activities (collected during this turn)
       let streamedText = '';
-      let hasBrowserStream = false;
+      const turnActivities: AgentActivity[] = [];
 
       try {
         const hasApiKey = !!settings?.apiKey;
@@ -173,7 +171,6 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             settings!.provider === 'custom');
 
         if (useBrowserCall) {
-          hasBrowserStream = true;
           const data = await streamBrowserLLM(
             nextMessages,
             {
@@ -186,15 +183,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             learnerStateRef.current,
             {
               onActivity: (act) => {
-                setActivities((prev) => {
-                  const idx = prev.findIndex((a) => a.id === act.id);
-                  if (idx >= 0) {
-                    const copy = [...prev];
-                    copy[idx] = act;
-                    return copy;
-                  }
-                  return [...prev, act];
-                });
+                const idx = turnActivities.findIndex((a) => a.id === act.id);
+                if (idx >= 0) turnActivities[idx] = act;
+                else turnActivities.push(act);
+                // Live update
+                setLiveActivities([...turnActivities]);
                 // Update streaming agent based on latest agent_start
                 if (act.type === 'agent_start' && act.agent !== 'orchestrator') {
                   setStreamingAgent(act.agent);
@@ -228,16 +221,21 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             }
           );
 
-          // Finalize — replace streaming placeholder with final message
+          const finalContent = data.content || streamedText || '（导师暂未返回内容）';
+          const finalActivities = data.activities?.length ? data.activities : turnActivities;
+
+          // Finalize assistant message with activities attached
           const assistantMessage: AgentMessage = {
             role: 'assistant',
-            content: data.content || streamedText || '（导师暂未返回内容）',
+            content: finalContent,
             agentRole: modeToAgent(mode),
             timestamp: Date.now(),
+            activities: finalActivities,
           };
           setMessages((prev) => [...prev, assistantMessage]);
           setStreamingContent('');
           setStreamingAgent(null);
+          setLiveActivities([]);
 
           if (data.problem) {
             if (quickValidate(data.problem)) {
@@ -281,7 +279,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             }));
           }
         } else {
-          // Non-browser path: server API (non-streaming for now)
+          // Non-browser path: server API
           const res = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -300,12 +298,10 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             content: data.content || '（导师暂未返回内容）',
             agentRole: data.agentTrail?.[data.agentTrail.length - 1]?.agent,
             timestamp: Date.now(),
+            activities: data.activities,
           };
           setMessages((prev) => [...prev, assistantMessage]);
-
-          if (data.activities?.length) {
-            setActivities(data.activities);
-          }
+          setLiveActivities([]);
 
           if (data.problem) {
             if (quickValidate(data.problem)) {
@@ -363,6 +359,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         setMessages((prev) => [...prev, errorMessage]);
         setStreamingContent('');
         setStreamingAgent(null);
+        setLiveActivities([]);
       } finally {
         setIsLoading(false);
       }
@@ -372,7 +369,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   const clearChat = useCallback(() => {
     setMessages([WELCOME_MESSAGE]);
-    setActivities([]);
+    setLiveActivities([]);
     setStreamingContent('');
     setStreamingAgent(null);
     setIsLoading(false);
@@ -384,24 +381,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   const loadMessages = useCallback((msgs: AgentMessage[]) => {
     setMessages(msgs.length > 0 ? msgs : [WELCOME_MESSAGE]);
-    setActivities([]);
+    setLiveActivities([]);
     setStreamingContent('');
     setStreamingAgent(null);
     setIsLoading(false);
   }, []);
-
-  // Compute legacy agentTrail from activities for backward compatibility
-  const agentTrail = (() => {
-    const seen = new Set<AgentRole>();
-    const trail: { agent: AgentRole; action: string; timestamp: number }[] = [];
-    for (const a of activities) {
-      if (a.type === 'agent_start' && !seen.has(a.agent)) {
-        seen.add(a.agent);
-        trail.push({ agent: a.agent, action: a.label, timestamp: a.timestamp });
-      }
-    }
-    return trail;
-  })();
 
   return {
     messages,
@@ -409,8 +393,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     appendMessage,
     loadMessages,
     isLoading,
-    agentTrail,
-    activities,
+    liveActivities,
     streamingContent,
     streamingAgent,
     currentProblem,
