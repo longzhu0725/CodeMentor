@@ -148,13 +148,95 @@ streamBrowserLLM() 开始
   ├─ emit onActivity({type: 'thinking', label: '正在生成题目...'})
   │
   ├─ for each SSE chunk:
-  │    └─ emit onToken(delta)  → UI 逐字渲染
+  │    ├─ reasoning_content → emit onActivity({type: 'thinking', detail: preview})
+  │    └─ content → emit onToken(delta)  → UI 逐字渲染
   │
   ├─ emit onActivity({type: 'validate', label: '校验题目结构'})
   ├─ emit onActivity({type: 'agent_end'})
   │
   └─ resolve(ChatResponse)
 ```
+
+### 思维链持久化
+
+思维链活动通过 `emit()` 函数同时推送到两个位置：
+1. **activities 数组**：随 `ChatResponse` 返回，附加到 assistant 消息上
+2. **onActivity 回调**：实时推送给 UI 的 `liveActivities`，生成中可见
+
+关键修复：`callLLMStreaming` 中的推理活动（reasoning_content）现在也通过 `emit` 函数发送，确保推理过程被正确保存到 activities 数组中，完成后仍可查看。`useChat` 优先使用 `turnActivities`（回调捕获的完整超集）而非 `data.activities`。
+
+## 多智能体顺序编排
+
+当用户请求包含多个意图时（如"先讲解数组，再出一道题"），系统自动检测并启动多步编排流程。
+
+### 多意图检测（detectMultiStepRequest）
+
+检测逻辑：
+1. 识别各意图关键词（讲解/出题/规划/审查）
+2. 检测顺序连接词（先...再...、然后、接着）
+3. 当检测到 2 个以上意图 + 顺序连接词时，返回 AgentStep 序列
+
+支持的组合模式：
+
+| 用户输入模式 | 检测结果 | 执行顺序 |
+|---|---|---|
+| "先讲解数组，再出一道题" | 讲解 + 练习 | 讲师(chat) → 出题官(practice) |
+| "讲解一下二叉树然后给我规划学习路径" | 讲解 + 规划 | 讲师(chat) → 规划师(plan) |
+| "出题然后评估" | 练习 + 审查 | 出题官(practice) → 考官(review) |
+
+### 顺序编排流程（streamBrowserLLMMultiStep）
+
+```
+用户输入: "先给我讲解一下数组，再出一道相关的题"
+  │
+  ├─ detectMultiStepRequest() → [
+  │    {agent: 'lecturer', mode: 'chat', task: '讲解数组', usePrevContext: false},
+  │    {agent: 'problem_setter', mode: 'practice', task: '基于数组出题', usePrevContext: true}
+  │  ]
+  │
+  ├─ 总控: emit onActivity('多步任务计划: 1.讲师(chat) → 2.出题官(practice)')
+  │
+  ├─ Step 1: 讲师 Agent
+  │    ├─ emit agent_start('讲师 · 第1步/2')
+  │    ├─ emit skill_load('苏格拉底教学法')
+  │    ├─ emit knowledge_read('数组知识点')
+  │    ├─ emit thinking('讲师 · Socratic 推理中…')
+  │    ├─ LLM 流式调用 → onToken 逐字推送
+  │    ├─ emit agent_end('讲师完成第1步')
+  │    └─ 输出存为 prevOutput
+  │
+  ├─ 总控: emit onActivity('第1步完成，传递上下文给第2步')
+  │
+  ├─ Step 2: 出题官 Agent
+  │    ├─ emit agent_start('出题官 · 第2步/2')
+  │    ├─ emit skill_load('出题方法论')
+  │    ├─ 构建 prompt: task + prevOutput（上游讲解作为参考上下文）
+  │    ├─ emit thinking('出题官 · Plan-and-Solve 推理中…')
+  │    ├─ LLM 流式调用 → onToken 逐字推送
+  │    ├─ emit validate('验证题目结构')
+  │    └─ emit agent_end('出题官完成第2步')
+  │
+  ├─ 总控: emit onActivity('多步任务全部完成')
+  │
+  └─ 合并所有步骤输出 → 返回 ChatResponse
+```
+
+### 上下文传递机制
+
+每个 Agent 使用**隔离上下文**（fresh conversation），上游 Agent 的输出通过 prompt 注入传递给下游：
+
+```typescript
+// Step 2 的用户消息构建
+let userContent = step.task;
+if (step.usePrevContext && prevOutput) {
+  userContent += '\n\n---\n\n## 上一个 Agent 的输出（作为参考上下文）\n\n' + prevOutput;
+}
+```
+
+这确保了：
+- 下游 Agent 能看到上游的讲解内容来出相关题目
+- 每个 Agent 的系统提示词互不干扰
+- Token 效率高（只传必要内容，不传整个对话历史）
 
 ## 工具自动调用
 

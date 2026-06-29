@@ -166,14 +166,17 @@ export async function streamBrowserLLM(
   const { baseURL, model } = resolveEndpoint(settings);
   const activities: AgentActivity[] = [];
   const emit = (a: AgentActivity) => {
-    activities.push(a);
+    // Update-or-insert: replace if same ID exists (for status updates)
+    const idx = activities.findIndex((x) => x.id === a.id);
+    if (idx >= 0) activities[idx] = a;
+    else activities.push(a);
     callbacks.onActivity?.(a);
   };
   const finish = (a: AgentActivity, status: AgentActivity['status'] = 'success', detail?: string) => {
     const done = finishActivity(a, status, detail);
-    // Replace last matching activity in array
     const idx = activities.findIndex((x) => x.id === a.id);
     if (idx >= 0) activities[idx] = done;
+    else activities.push(done);
     callbacks.onActivity?.(done);
     return done;
   };
@@ -297,13 +300,18 @@ export async function streamBrowserLLM(
   emit(thinkAct);
 
   // --- Call LLM with streaming ---
+  // Wrap callbacks so reasoning activities go through emit (which adds to activities array)
+  const wrappedCallbacks: StreamCallbacks = {
+    ...callbacks,
+    onActivity: emit,
+  };
   const { content, usedFallback } = await callLLMStreaming(
     baseURL,
     model,
     settings.apiKey,
     apiMessages,
     mode,
-    callbacks,
+    wrappedCallbacks,
     agentRole
   );
 
@@ -368,6 +376,274 @@ export async function streamBrowserLLM(
 
   // Build legacy trail for backward compatibility
   const agentTrail = buildLegacyTrail(activities, agentRole, mode);
+
+  return {
+    content: finalContent,
+    agentTrail,
+    activities,
+    problem,
+  };
+}
+
+// ============================================================
+// Multi-step orchestration (sequential multi-agent)
+// ============================================================
+
+export interface AgentStep {
+  agent: AgentRole;
+  mode: 'chat' | 'practice' | 'plan' | 'review';
+  task: string;
+  usePrevContext: boolean;
+}
+
+const AGENT_SKILL_MAP: Record<AgentRole, string> = {
+  orchestrator: 'socratic-teaching',
+  lecturer: 'socratic-teaching',
+  problem_setter: 'problem-generation',
+  examiner: 'code-assessment',
+  path_planner: 'learning-path',
+};
+
+/**
+ * Multi-step sequential orchestration.
+ * Executes multiple sub-agents in sequence, passing each agent's output
+ * as context to the next. Activities and streaming are tracked across
+ * all steps so the UI shows a unified thinking chain.
+ */
+export async function streamBrowserLLMMultiStep(
+  messages: AgentMessage[],
+  settings: BrowserLLMSettings,
+  steps: AgentStep[],
+  learnerState: LearnerState,
+  callbacks: StreamCallbacks,
+  context?: ChatContext
+): Promise<ChatResponse> {
+  const { baseURL, model } = resolveEndpoint(settings);
+  const activities: AgentActivity[] = [];
+  const emit = (a: AgentActivity) => {
+    const idx = activities.findIndex((x) => x.id === a.id);
+    if (idx >= 0) activities[idx] = a;
+    else activities.push(a);
+    callbacks.onActivity?.(a);
+  };
+  const finish = (a: AgentActivity, status: AgentActivity['status'] = 'success', detail?: string) => {
+    const done = finishActivity(a, status, detail);
+    const idx = activities.findIndex((x) => x.id === a.id);
+    if (idx >= 0) activities[idx] = done;
+    else activities.push(done);
+    callbacks.onActivity?.(done);
+    return done;
+  };
+
+  // --- Orchestrator plans the multi-step task ---
+  const orchStart = newActivity(
+    'orchestrator',
+    'agent_start',
+    '总控分析用户意图（多步任务）',
+    { paradigm: 'ReAct' as AgentParadigm }
+  );
+  emit(orchStart);
+  await sleep(150);
+
+  const stepSummary = steps
+    .map((s, i) => `${i + 1}.${AGENT_NAMES[s.agent]}(${s.mode})`)
+    .join(' → ');
+  finish(orchStart, 'success', `识别为多步任务，计划：${stepSummary}`);
+
+  let prevOutput = '';
+  const allContents: string[] = [];
+  let problem: AlgorithmProblem | undefined;
+
+  for (let stepIdx = 0; stepIdx < steps.length; stepIdx++) {
+    const step = steps[stepIdx];
+    const agentName = AGENT_NAMES[step.agent];
+    const skillName = AGENT_SKILL_MAP[step.agent];
+
+    // --- Sub-agent starts ---
+    const agentStart = newActivity(
+      step.agent,
+      'agent_start',
+      `${agentName}开始工作（第${stepIdx + 1}步/${steps.length}）`,
+      { paradigm: AGENT_PARADIGM[step.agent] as AgentParadigm }
+    );
+    emit(agentStart);
+
+    // --- Load skill ---
+    const skill = skillRegistry.getSkill(skillName);
+    const skillAct = newActivity(
+      step.agent,
+      'skill_load',
+      `加载技能：${skill?.name || skillName}`,
+      { detail: skill?.description?.slice(0, 120) }
+    );
+    emit(skillAct);
+    await sleep(60);
+    finish(skillAct, 'success');
+
+    // --- Read knowledge base ---
+    const relevantTopics = getRelevantTopics(messages, step.mode);
+    const knowledgeAct = newActivity(
+      step.agent,
+      'knowledge_read',
+      `读取知识库（${relevantTopics.length} 个相关知识点）`,
+      { detail: relevantTopics.map((t) => t.name).join('、') || '通用知识' }
+    );
+    emit(knowledgeAct);
+    await sleep(40);
+    finish(knowledgeAct, 'success');
+
+    // --- Tool calls (same as single-agent) ---
+    let codeAnalysisResult: string | null = null;
+    if (step.mode === 'review' && context?.codeSubmission) {
+      const analyzeAct = newActivity(step.agent, 'tool_call', '调用工具：analyze_code（代码静态分析）');
+      emit(analyzeAct);
+      const toolResult = await toolRegistry.execute('analyze_code', { code: context.codeSubmission });
+      codeAnalysisResult = toolResult.display || null;
+      finish(analyzeAct, toolResult.success ? 'success' : 'warning',
+        (toolResult.display || toolResult.error || '').slice(0, 200));
+    }
+
+    let pathToolResult: string | null = null;
+    if (step.mode === 'plan') {
+      const pathAct = newActivity(step.agent, 'tool_call', '调用工具：learning_path（生成结构化路径）');
+      emit(pathAct);
+      const toolResult = await toolRegistry.execute('learning_path', {
+        goal: learnerState.preferences?.targetGroup || '自学',
+      });
+      pathToolResult = toolResult.display || null;
+      finish(pathAct, toolResult.success ? 'success' : 'warning', pathToolResult?.slice(0, 200));
+    }
+
+    finish(agentStart, 'success');
+
+    // --- Build system prompt ---
+    let systemPrompt = SUB_AGENTS[step.agent].systemPrompt;
+    if (step.mode === 'practice') {
+      systemPrompt += '\n\n' + PRACTICE_SCHEMA_PROMPT;
+    } else if (step.mode === 'plan' && pathToolResult) {
+      systemPrompt += '\n\n## 预计算的学习路径参考\n' + pathToolResult;
+    } else if (step.mode === 'review' && codeAnalysisResult) {
+      systemPrompt += '\n\n## 静态代码分析结果\n' + codeAnalysisResult;
+    }
+
+    const learnerContext = buildLearnerContext(learnerState, step.mode, context);
+    const fullSystem = systemPrompt + '\n\n' + learnerContext;
+
+    // --- Build user message ---
+    // For multi-step, use the step's task as the user message.
+    // If usePrevContext, append previous agent's output as reference.
+    let userContent = step.task;
+    if (step.usePrevContext && prevOutput) {
+      userContent += '\n\n---\n\n## 上一个 Agent 的输出（作为参考上下文）\n\n' + prevOutput;
+    }
+
+    const apiMessages: Array<{ role: string; content: string }> = [
+      { role: 'system', content: fullSystem },
+      // Include original conversation for context (but prioritize the step task)
+      ...messages.slice(-4).map((m) => ({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content,
+      })),
+      { role: 'user', content: userContent },
+    ];
+
+    // --- Thinking indicator ---
+    const paradigm = AGENT_PARADIGM[step.agent] as AgentParadigm;
+    const thinkAct = newActivity(
+      step.agent,
+      'thinking',
+      `${agentName} · ${paradigm} 推理中…`,
+      { detail: '', paradigm }
+    );
+    emit(thinkAct);
+
+    // --- Call LLM with streaming ---
+    const wrappedCallbacks: StreamCallbacks = {
+      ...callbacks,
+      onActivity: emit,
+      onToken: (delta) => {
+        // Prefix content with step header for first token of each step
+        callbacks.onToken?.(delta);
+      },
+    };
+
+    const { content: stepContent, usedFallback } = await callLLMStreaming(
+      baseURL,
+      model,
+      settings.apiKey,
+      apiMessages,
+      step.mode,
+      wrappedCallbacks,
+      step.agent
+    );
+
+    finish(thinkAct, 'success',
+      `${paradigm} 推理过程（${stepContent.length} 字）${usedFallback ? '（非流式模式）' : ''}`);
+
+    // --- Post-processing for practice mode ---
+    let stepFinalContent = stepContent;
+    if (step.mode === 'practice') {
+      const rawProblem = extractProblem(stepContent);
+      if (rawProblem) {
+        const normalized = normalizeProblem(rawProblem);
+        const valAct = newActivity(step.agent, 'validate', '验证题目结构与质量');
+        emit(valAct);
+
+        const issues = validateProblemStructure(normalized);
+        const quickOk = quickValidate(normalized);
+
+        if (quickOk) {
+          finish(valAct, 'success', '结构验证通过');
+          problem = normalized;
+          callbacks.onProblem?.(normalized);
+          stepFinalContent = `好的，我为你准备了一道 **${normalized.topicId}** 练习题：\n\n### ${normalized.title}\n\n${normalized.description}\n\n**难度**：${'⭐'.repeat(normalized.difficulty)}\n\n**示例**：\n${formatExamples(normalized.examples)}\n\n**约束**：\n${(normalized.constraints || []).map((c: string) => `- ${c}`).join('\n')}\n\n快在右侧练习台编写你的 Python 代码吧！`;
+        } else {
+          finish(valAct, 'error', `验证失败，降级到本地题库`);
+          const localProblem = getRandomProblem();
+          problem = localProblem;
+          callbacks.onProblem?.(localProblem);
+          stepFinalContent = `我从本地题库为你挑选了一道题目：\n\n### ${localProblem.title}\n\n${localProblem.description}\n\n**难度**：${'⭐'.repeat(localProblem.difficulty)}\n\n快在右侧练习台编写你的 Python 代码吧！`;
+        }
+      }
+    }
+
+    // --- Store output for next step ---
+    prevOutput = stepFinalContent;
+    allContents.push(stepFinalContent);
+
+    // --- Agent end ---
+    const agentEnd = newActivity(step.agent, 'agent_end', `${agentName}完成第${stepIdx + 1}步`);
+    emit(agentEnd);
+    finish(agentEnd, 'success');
+
+    // --- Orchestrator transition ---
+    if (stepIdx < steps.length - 1) {
+      const transAct = newActivity(
+        'orchestrator',
+        'agent_start',
+        `总控：第${stepIdx + 1}步完成，将结果传递给第${stepIdx + 2}步`,
+        { paradigm: 'ReAct' as AgentParadigm }
+      );
+      emit(transAct);
+      await sleep(100);
+      finish(transAct, 'success', `传递 ${stepFinalContent.length} 字上下文给下一个 Agent`);
+    }
+  }
+
+  // --- Combine all outputs ---
+  const finalContent = allContents.join('\n\n---\n\n');
+
+  // --- Orchestrator finalizes ---
+  const orchEnd = newActivity(
+    'orchestrator',
+    'agent_end',
+    '总控：多步任务全部完成',
+    { paradigm: 'ReAct' as AgentParadigm }
+  );
+  emit(orchEnd);
+  finish(orchEnd, 'success', `共完成 ${steps.length} 步，输出 ${finalContent.length} 字`);
+
+  const agentTrail = buildLegacyTrail(activities, steps[steps.length - 1].agent, 'chat');
 
   return {
     content: finalContent,

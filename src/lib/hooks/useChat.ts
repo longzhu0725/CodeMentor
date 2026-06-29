@@ -12,7 +12,8 @@ import {
   AgentActivity,
 } from '@/types';
 import type { AppSettings } from '@/components/SettingsModal';
-import { streamBrowserLLM } from '@/lib/llm/browser-client';
+import { streamBrowserLLM, streamBrowserLLMMultiStep } from '@/lib/llm/browser-client';
+import type { AgentStep } from '@/lib/llm/browser-client';
 import { quickValidate } from '@/lib/problem-validator';
 
 export type { AgentActivity };
@@ -95,6 +96,94 @@ function inferIntent(text: string): 'chat' | 'practice' | 'plan' | 'review' {
   return inferMode(text);
 }
 
+// ============================================================
+// Multi-step intent detection
+// Detects when a user request requires multiple agents working
+// in sequence (e.g., "先讲解数组，再出一道题")
+// ============================================================
+
+function detectMultiStepRequest(text: string): AgentStep[] | null {
+  // Detect individual intent keywords
+  const hasExplain = /讲解|说说|介绍|解释|什么是|怎么理解|了解一下|学习一下|讲一下|说下/.test(text);
+  const hasPractice = /出题|出一道|来一道|练习题|考考|做题|算法题|练一练|给我题/.test(text);
+  const hasPlan = /学习计划|学习路径|学习路线|规划|怎么学/.test(text);
+  const hasReview = /评估|审查|看看代码|检查代码/.test(text);
+
+  // Detect sequential connectors
+  const hasSequential = /先.{0,40}(再|然后|接着|之后)|首先.{0,40}(然后|接着|再)|.{0,20}(然后|接着|再).{0,20}(出题|练习|考|规划)/.test(text);
+
+  // Also check for comma-separated dual intents
+  const hasMultiIntent = [hasExplain, hasPractice, hasPlan, hasReview].filter(Boolean).length >= 2;
+
+  if (!hasMultiIntent && !hasSequential) return null;
+
+  // Extract topic from explain intent
+  const topicMatch = text.match(
+    /(?:讲解|说说|介绍|解释|了解|学习|讲一下|说下)\s*(?:一下\s*)?(?:关于\s*)?(.+?)(?:\s*[，,。.!！；;]|$)/
+  );
+  const topic = topicMatch ? topicMatch[1].trim().replace(/[，,。.！!；;？?]/g, '') : '';
+
+  // Pattern: explain then practice
+  if (hasExplain && hasPractice) {
+    return [
+      {
+        agent: 'lecturer',
+        mode: 'chat',
+        task: topic
+          ? `请讲解以下知识点：${topic}。请给出清晰的定义、核心概念和常见应用场景。`
+          : text,
+        usePrevContext: false,
+      },
+      {
+        agent: 'problem_setter',
+        mode: 'practice',
+        task: topic
+          ? `请基于刚才讲解的「${topic}」知识点，出一道相关的练习题。题目难度适中，包含边界测试用例。`
+          : '请出一道与刚才讲解内容相关的练习题',
+        usePrevContext: true,
+      },
+    ];
+  }
+
+  // Pattern: explain then plan
+  if (hasExplain && hasPlan && (hasSequential || hasMultiIntent)) {
+    return [
+      {
+        agent: 'lecturer',
+        mode: 'chat',
+        task: topic ? `请讲解以下知识点：${topic}` : text,
+        usePrevContext: false,
+      },
+      {
+        agent: 'path_planner',
+        mode: 'plan',
+        task: '基于刚才的讲解内容，为学生制定一个针对性的学习计划',
+        usePrevContext: true,
+      },
+    ];
+  }
+
+  // Pattern: practice then review (less common, but supported)
+  if (hasPractice && hasReview && hasSequential) {
+    return [
+      {
+        agent: 'problem_setter',
+        mode: 'practice',
+        task: text,
+        usePrevContext: false,
+      },
+      {
+        agent: 'examiner',
+        mode: 'review',
+        task: '请评估刚才生成的题目和参考解答的质量',
+        usePrevContext: true,
+      },
+    ];
+  }
+
+  return null;
+}
+
 function modeToAgent(mode: string): AgentRole {
   switch (mode) {
     case 'practice': return 'problem_setter';
@@ -131,6 +220,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
       const mode = inferMode(content, context);
       const intent = inferIntent(content);
+      const multiSteps = detectMultiStepRequest(content);
 
       const userMessage: AgentMessage = {
         role: 'user',
@@ -143,7 +233,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       setIsLoading(true);
       setLiveActivities([]);
       setStreamingContent('');
-      setStreamingAgent(modeToAgent(mode));
+      setStreamingAgent(multiSteps ? multiSteps[0].agent : modeToAgent(mode));
 
       const requestBody: ChatRequest = {
         messages: nextMessages,
@@ -171,64 +261,83 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             settings!.provider === 'custom');
 
         if (useBrowserCall) {
-          const data = await streamBrowserLLM(
-            nextMessages,
-            {
-              provider: settings!.provider,
-              apiKey: settings!.apiKey,
-              model: settings!.model,
-              baseURL: settings!.baseURL,
+          // Shared callbacks for both single-step and multi-step
+          const llmCallbacks = {
+            onActivity: (act: AgentActivity) => {
+              const idx = turnActivities.findIndex((a) => a.id === act.id);
+              if (idx >= 0) turnActivities[idx] = act;
+              else turnActivities.push(act);
+              setLiveActivities([...turnActivities]);
+              if (act.type === 'agent_start' && act.agent !== 'orchestrator') {
+                setStreamingAgent(act.agent);
+              }
             },
-            mode,
-            learnerStateRef.current,
-            {
-              onActivity: (act) => {
-                const idx = turnActivities.findIndex((a) => a.id === act.id);
-                if (idx >= 0) turnActivities[idx] = act;
-                else turnActivities.push(act);
-                // Live update
-                setLiveActivities([...turnActivities]);
-                // Update streaming agent based on latest agent_start
-                if (act.type === 'agent_start' && act.agent !== 'orchestrator') {
-                  setStreamingAgent(act.agent);
-                }
-              },
-              onToken: (delta) => {
-                streamedText += delta;
-                setStreamingContent(streamedText);
-              },
-              onProblem: (p) => {
-                if (quickValidate(p)) {
-                  setCurrentProblem(p);
-                }
-              },
+            onToken: (delta: string) => {
+              streamedText += delta;
+              setStreamingContent(streamedText);
             },
-            {
-              currentProblem: context?.problem ?? currentProblemRef.current ?? undefined,
-              codeSubmission: context?.code,
-              executionResult: context?.executionResult
-                ? {
-                    passed: context.executionResult.testResults?.passed ?? 0,
-                    failed:
-                      (context.executionResult.testResults?.total ?? 0) -
-                      (context.executionResult.testResults?.passed ?? 0),
-                    details:
-                      context.executionResult.error ||
-                      context.executionResult.output ||
-                      undefined,
-                  }
-                : undefined,
-            }
-          );
+            onProblem: (p: AlgorithmProblem) => {
+              if (quickValidate(p)) {
+                setCurrentProblem(p);
+              }
+            },
+          };
+
+          const chatContext = {
+            currentProblem: context?.problem ?? currentProblemRef.current ?? undefined,
+            codeSubmission: context?.code,
+            executionResult: context?.executionResult
+              ? {
+                  passed: context.executionResult.testResults?.passed ?? 0,
+                  failed:
+                    (context.executionResult.testResults?.total ?? 0) -
+                    (context.executionResult.testResults?.passed ?? 0),
+                  details:
+                    context.executionResult.error ||
+                    context.executionResult.output ||
+                    undefined,
+                }
+              : undefined,
+          };
+
+          const llmSettings = {
+            provider: settings!.provider,
+            apiKey: settings!.apiKey,
+            model: settings!.model,
+            baseURL: settings!.baseURL,
+          };
+
+          // Route to multi-step orchestration or single-agent call
+          const data = multiSteps && multiSteps.length > 1
+            ? await streamBrowserLLMMultiStep(
+                nextMessages,
+                llmSettings,
+                multiSteps,
+                learnerStateRef.current,
+                llmCallbacks,
+                chatContext
+              )
+            : await streamBrowserLLM(
+                nextMessages,
+                llmSettings,
+                mode,
+                learnerStateRef.current,
+                llmCallbacks,
+                chatContext
+              );
 
           const finalContent = data.content || streamedText || '（导师暂未返回内容）';
-          const finalActivities = data.activities?.length ? data.activities : turnActivities;
+          // turnActivities is a superset: it captures ALL callback emissions
+          // (including reasoning activities from callLLMStreaming), so prefer it.
+          const finalActivities = turnActivities.length > 0
+            ? turnActivities
+            : (data.activities || []);
 
           // Finalize assistant message with activities attached
           const assistantMessage: AgentMessage = {
             role: 'assistant',
             content: finalContent,
-            agentRole: modeToAgent(mode),
+            agentRole: multiSteps ? multiSteps[multiSteps.length - 1].agent : modeToAgent(mode),
             timestamp: Date.now(),
             activities: finalActivities,
           };

@@ -41,12 +41,19 @@ CodeMentor 采用**浏览器端优先**的架构设计，所有核心逻辑（Ag
   ↓
 useChat.sendMessage(text, context)
   ↓
-inferMode() 识别意图 (chat/practice/plan/review)
-  ↓
-browser-client.streamBrowserLLM()
-  ├─ onActivity → liveActivities (实时活动更新)
-  ├─ onToken    → streamingContent (流式文本)
-  └─ onProblem  → currentProblem (题目解析)
+detectMultiStepRequest() → 检测多意图
+  ├─ 多步请求 → streamBrowserLLMMultiStep()
+  │    ├─ 总控规划：分解为 AgentStep 序列
+  │    ├─ Step 1: Agent A → 流式输出 → 存为 prevOutput
+  │    ├─ 总控过渡：传递上下文
+  │    ├─ Step 2: Agent B → 注入 prevOutput → 流式输出
+  │    └─ 合并所有步骤输出
+  └─ 单步请求 → inferMode() 识别意图 (chat/practice/plan/review)
+       ↓
+       browser-client.streamBrowserLLM()
+       ├─ onActivity → liveActivities (实时活动更新)
+       ├─ onToken    → streamingContent (流式文本)
+       └─ onProblem  → currentProblem (题目解析)
   ↓
 完成后:
   - assistant message 附加 activities → messages[]
